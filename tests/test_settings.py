@@ -1,5 +1,4 @@
 """What a developer sees when the settings are missing or would build wrong URLs."""
-import importlib
 import json
 import subprocess
 import sys
@@ -10,7 +9,7 @@ from django.core import checks
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 
-from django_simple_api_proxy import conf, views
+from django_simple_api_proxy import conf
 from django_simple_api_proxy.checks import check_json_mode_hooks, check_settings
 from django_simple_api_proxy.views import APIProxy
 
@@ -33,12 +32,11 @@ class MissingSettingTests(SimpleTestCase):
         ))
 
     def test_importing_the_view_without_settings_says_what_to_add(self):
-        # Before 1.1 this was AttributeError: 'Settings' object has no attribute ...
-        with override_settings():
-            del settings.TARGET_API_URL
+        # Before 2.0 this was AttributeError: 'Settings' object has no attribute ...
+        result = run_fresh_project(without="TARGET_API_URL")
 
-            with self.assertRaisesMessage(ImproperlyConfigured, "TARGET_API_URL = 'https://"):
-                importlib.reload(views)
+        self.assertEqual(result["error"], "ImproperlyConfigured")
+        self.assertIn("TARGET_API_URL = 'https://httpbin.org'", result["message"])
 
     def test_nothing_is_raised_when_everything_is_set(self):
         conf.require_settings()
@@ -49,9 +47,12 @@ class MissingSettingTests(SimpleTestCase):
             self.assertIs(conf.pass_through_enabled(), True)
 
 
-# A project set up like the README's quick start, without PROXY_PASS_THROUGH, in a
-# process of its own (the test settings pin the 1.x JSON mode). The API server is
-# a stand-in for requests.request that answers 404 in plain text.
+# A project set up like the README's quick start, in a process of its own: importing
+# the view reads the settings once, and the test settings pin the 1.x JSON mode.
+# The proxy settings come in as JSON on the command line. The API server is a
+# stand-in for requests.request that answers 404 in plain text.
+QUICK_START = {"TARGET_API_URL": "https://httpbin.org", "PROXY_ROUTE_PATH": "my_test_route",
+               "PROXY_TARGET_PATH": "get"}
 FRESH_PROJECT = textwrap.dedent("""
     import json, sys, types
     from unittest import mock
@@ -63,19 +64,22 @@ FRESH_PROJECT = textwrap.dedent("""
         DEBUG=True, SECRET_KEY="x", ALLOWED_HOSTS=["testserver"], ROOT_URLCONF="project_urls",
         INSTALLED_APPS=["django.contrib.auth", "django.contrib.contenttypes",
                         "rest_framework", "django_simple_api_proxy"],
-        TARGET_API_URL="https://httpbin.org", PROXY_ROUTE_PATH="my_test_route",
-        PROXY_TARGET_PATH="get",
+        **json.loads(sys.argv[1]),
     )
     django.setup()
+    try:
+        from django_simple_api_proxy.views import APIProxy
+    except Exception as exc:
+        print(json.dumps({"error": type(exc).__name__, "message": str(exc)}))
+        sys.exit()
+
     from django.conf import settings
+    from django.test import Client
     from django.urls import include, path
 
     urls = types.ModuleType("project_urls")
     urls.urlpatterns = [path(settings.PROXY_ROUTE_PATH, include("django_simple_api_proxy.urls"))]
     sys.modules["project_urls"] = urls
-
-    from django.test import Client
-    from django_simple_api_proxy.views import APIProxy
 
     reply = mock.Mock(status_code=404, reason="Not Found", content=b"nope",
                       headers={"Content-Type": "text/plain"}, raw=None)
@@ -88,6 +92,16 @@ FRESH_PROJECT = textwrap.dedent("""
         "allow_redirects": api.call_args.kwargs["allow_redirects"],
     }))
 """)
+
+
+def run_fresh_project(without=None):
+    """Run FRESH_PROJECT with the quick start settings, minus `without`; return its JSON."""
+    proxy_settings = {name: value for name, value in QUICK_START.items() if name != without}
+    result = subprocess.run([sys.executable, "-c", FRESH_PROJECT, json.dumps(proxy_settings)],
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr[-2000:])
+    return json.loads(result.stdout.strip().splitlines()[-1])
 
 
 class DefaultModeTests(SimpleTestCase):
@@ -104,11 +118,7 @@ class DefaultModeTests(SimpleTestCase):
             self.assertIs(conf.pass_through_enabled(), False)
 
     def test_fresh_project_passes_requests_through(self):
-        result = subprocess.run([sys.executable, "-c", FRESH_PROJECT], capture_output=True,
-                                text=True, timeout=120)
-
-        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
-        self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), {
+        self.assertEqual(run_fresh_project(), {
             "pass_through": True,
             "status": 404, "body": "nope",
             "url": "https://httpbin.org/get/items/7/?a=1",

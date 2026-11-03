@@ -20,6 +20,9 @@ from django_simple_api_proxy.conf import pass_through_enabled
 
 _ID = "django_simple_api_proxy."
 
+#: The schemes requests can send to.
+URL_SCHEMES = ("http://", "https://")
+
 
 def check_settings(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckMessage]:
     """Warn about proxy settings that send requests to the wrong place."""
@@ -30,7 +33,7 @@ def check_settings(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckM
     # Pass-through mode trims the slashes itself, so only the scheme matters there.
     exact_paths = not pass_through_enabled()
 
-    if isinstance(url, str) and not url.startswith(("http://", "https://")):
+    if isinstance(url, str) and not url.startswith(URL_SCHEMES):
         warnings.append(checks.Warning(
             "TARGET_API_URL does not start with http:// or https://, "
             "so no request can reach it.",
@@ -63,10 +66,6 @@ def check_settings(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckM
     return warnings
 
 
-#: Methods only JSON mode calls; in pass-through mode an override of one does nothing.
-JSON_MODE_HOOKS = ("update_payload", "preprocess_request_body", "response")
-
-
 def _subclasses(cls: Any) -> Iterator[Any]:  # APIProxy, imported late (it needs the settings)
     for sub in cls.__subclasses__():
         yield sub
@@ -76,6 +75,7 @@ def _subclasses(cls: Any) -> Iterator[Any]:  # APIProxy, imported late (it needs
 def check_json_mode_hooks(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckMessage]:
     """Warn about subclasses that override JSON-mode methods but run in pass-through mode."""
     try:
+        from django_simple_api_proxy.json_mode import JSON_MODE_HOOKS
         from django_simple_api_proxy.views import APIProxy
     except ImproperlyConfigured:
         return []  # a setting is missing, and Django reports that already
