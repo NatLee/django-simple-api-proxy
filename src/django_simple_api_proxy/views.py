@@ -4,11 +4,12 @@
 ``<TARGET_API_URL>/<PROXY_TARGET_PATH>/<rest>`` and answers with what that server
 returns. It has two modes:
 
-* JSON mode, the default: JSON in, JSON out. It adds ``username`` to what it sends
-  and always answers with HTTP 200.
-* Pass-through mode (``PROXY_PASS_THROUGH = True`` or ``pass_through = True`` on a
-  subclass): the method, path, query string, headers and body go through as they
-  are, and the status code, headers and body of the reply come back as they are.
+* Pass-through mode, the default since 2.0: the method, path, query string,
+  headers and body go through as they are, and the status code, headers and body
+  of the reply come back as they are. Redirects go back to the client.
+* JSON mode, the behaviour of 1.x (``PROXY_PASS_THROUGH = False`` or
+  ``pass_through = False`` on a subclass): JSON in, JSON out. It adds
+  ``username`` to what it sends and always answers with HTTP 200.
 
 Subclass it to require a login or to change what is sent.
 """
@@ -18,7 +19,7 @@ import json
 import re
 from http.cookies import SimpleCookie
 from typing import Any, Mapping
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 
 import requests
 from django.conf import settings
@@ -88,7 +89,8 @@ class APIProxy(APIView):
     target_api_url: str = settings.TARGET_API_URL
     proxy_route_path: str = settings.PROXY_ROUTE_PATH
     proxy_target_path: str = settings.PROXY_TARGET_PATH
-    #: Pass everything through instead of JSON in, JSON out. See the module docstring.
+    #: Pass everything through (the default since 2.0); False brings back the JSON
+    #: mode of 1.x. See the module docstring.
     pass_through: bool = conf.pass_through_enabled()
 
     # -- HTTP methods ---------------------------------------------------------
@@ -211,17 +213,23 @@ class APIProxy(APIView):
         timeout: float | tuple[float, float] = 180,
         verify: bool | str = True,
         headers: Mapping[str, str] | None = None,
+        allow_redirects: bool | None = None,
     ) -> requests.Response:
         """Send the request to the API server and return its reply.
 
         In pass-through mode ``url`` carries the query string, ``data`` the raw
-        body and ``headers`` the result of ``upstream_headers()``, so an override
-        has to accept ``headers``.
+        body, ``headers`` the result of ``upstream_headers()``, and
+        ``allow_redirects`` is False, so an override has to accept those
+        (``**kwargs`` will do).
         """
         kwargs: dict[str, Any] = dict(method=method, url=url, params=params, data=data,
                                       json=json, timeout=timeout, verify=verify)
-        if headers is not None:  # JSON mode sends none, and calls requests as it always has
+        # JSON mode passes neither, and calls requests as it always has (following
+        # redirects).
+        if headers is not None:
             kwargs["headers"] = dict(headers)
+        if allow_redirects is not None:
+            kwargs["allow_redirects"] = allow_redirects
         return requests.request(**kwargs)
 
     # Django REST framework stores the finished reply in `self.response` after the
@@ -235,7 +243,8 @@ class APIProxy(APIView):
 
         The status code, headers, cookies and body come back as they are, except
         hop-by-hop headers and those that no longer fit after requests decoded the
-        body (``Content-Encoding``, ``Content-Length``).
+        body (``Content-Encoding``, ``Content-Length``). A ``Location`` header goes
+        through ``rewrite_location()``.
         """
         reply = HttpResponse(upstream.content, status=upstream.status_code,
                              reason=upstream.reason or None)
@@ -243,9 +252,47 @@ class APIProxy(APIView):
         head = self.request.method == "HEAD"
         for name, value in response_headers_to_relay(upstream.headers, head=head).items():
             reply[name] = value
+        location = reply.get("Location")
+        if location:
+            reply["Location"] = self.rewrite_location(self.request, location)
+            # Django's own redirects have `url`; its test client follows redirects by it.
+            reply.url = reply["Location"]  # type: ignore[attr-defined]
         for cookie in _set_cookie_headers(upstream):
             _add_cookie(reply, cookie)
         return reply
+
+    def rewrite_location(self, request: Request, location: str) -> str:
+        """Point a ``Location`` header of the API server at your site (pass-through mode).
+
+        * An address on the API server under ``proxy_target_path`` goes through the
+          proxy route: with the quick start settings, ``https://httpbin.org/get/next``
+          and ``/get/next`` both become ``/my_test_route/next``.
+        * A relative one (``next``, ``../list``, ``?page=2``) stays as it is: the
+          client resolves it against the proxy route, which is right already.
+        * An address on another host stays as it is. One on the API server outside
+          ``proxy_target_path`` (``/login`` above) becomes absolute, so it still
+          leads to the API server.
+        """
+        if not (location.startswith("/") or urlsplit(location).scheme):
+            return location
+        base = urlsplit(self.target_api_url.rstrip("/"))
+        target = self.proxy_target_path.strip("/")
+        base_path = base.path.rstrip("/") + (f"/{target}" if target else "")
+        there = urlsplit(urljoin(f"{base.scheme}://{base.netloc}/", location))
+        same_server = (there.scheme.lower(), there.netloc.lower()) == (
+            base.scheme.lower(), base.netloc.lower())
+        under_target = (not base_path or there.path == base_path
+                        or there.path.startswith(base_path + "/"))
+        if same_server and under_target:
+            try:
+                route, _ = self._split_route(request)
+            except Http404:  # a parse_path() override sent something else here
+                return location
+            path = route + there.path[len(base_path):]
+            return urlunsplit(("", "", path or "/", there.query, there.fragment))
+        if location.startswith("/") and not location.startswith("//"):
+            return urlunsplit(there)  # on the API server, outside the proxied path
+        return location
 
     # -- Django REST framework hooks ------------------------------------------
 
@@ -317,7 +364,9 @@ class APIProxy(APIView):
         headers = self.upstream_headers(request)
         logger.debug("Forwarding headers {} and {} bytes of body", sorted(headers), len(body))
         try:
-            upstream = self.send_request(method, url, data=body or None, headers=headers)
+            # Redirects go back to the client (see rewrite_location()), cookies and all.
+            upstream = self.send_request(method, url, data=body or None, headers=headers,
+                                         allow_redirects=False)
         except requests.RequestException as exc:
             status = 504 if isinstance(exc, requests.Timeout) else 502
             logger.exception('Could not proxy {} {}: {}. Replying {} {{"status": "error"}}',
@@ -327,14 +376,19 @@ class APIProxy(APIView):
                      _content_type(upstream) or "no Content-Type", len(upstream.content))
         return self.relay_response(upstream)
 
-    def _map_path_exactly(self, request: Request) -> str:
+    def _split_route(self, request: Request) -> tuple[str, str]:
+        """Split the request path into the proxy route on your site and the rest."""
         path = escape_uri_path(request.path)
         route = self.proxy_route_path.strip("/")
-        if route:
-            match = re.search("/" + re.escape(route) + "(?=/|$)", path)
-            if match is None:  # e.g. /my_test_routeXYZ, which the README's URLs also send here
-                raise Http404(f"{request.path} is not under /{route}/")
-            path = path[match.end():]
+        if not route:
+            return "", path
+        match = re.search("/" + re.escape(route) + "(?=/|$)", path)
+        if match is None:  # e.g. /my_test_routeXYZ, which the README's URLs also send here
+            raise Http404(f"{request.path} is not under /{route}/")
+        return path[:match.end()], path[match.end():]
+
+    def _map_path_exactly(self, request: Request) -> str:
+        _, path = self._split_route(request)
         target = self.proxy_target_path.strip("/")
         if target:
             return f"/{target}{path}"

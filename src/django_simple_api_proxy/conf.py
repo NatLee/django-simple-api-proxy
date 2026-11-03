@@ -29,5 +29,9 @@ def require_settings() -> None:
 
 
 def pass_through_enabled() -> bool:
-    """``PROXY_PASS_THROUGH`` from the settings; off unless a project turns it on."""
-    return bool(getattr(settings, "PROXY_PASS_THROUGH", False))
+    """``PROXY_PASS_THROUGH`` from the settings: on unless a project turns it off.
+
+    Since 2.0, pass-through mode is the default; ``PROXY_PASS_THROUGH = False``
+    brings back the JSON mode of 1.x.
+    """
+    return bool(getattr(settings, "PROXY_PASS_THROUGH", True))

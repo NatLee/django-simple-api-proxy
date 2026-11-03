@@ -76,8 +76,8 @@
 
   .mode { position: absolute; top: 322px; height: 112px; width: 432px; border-radius: 14px; padding: 14px 18px;
           border: 1px solid var(--line); background: var(--bg2); }
-  #json { left: 40px; }
-  #pass { left: 488px; border-color: var(--site-line); background: var(--site); }
+  #pass { left: 40px; border-color: var(--site-line); background: var(--site); }
+  #json { left: 488px; }
   .mode .label i { background: var(--amber); }
   #pass .label { color: var(--django-ink); }
   #pass .label i { background: var(--django); }
@@ -148,16 +148,16 @@
     <div class="mono">GET /get/items/7</div>
   </div>
 
-  <div class="mode" id="json">
-    <div class="label"><i></i>JSON mode <span class="chip">default</span></div>
-    <p>JSON in, JSON out. Adds the caller's <code>username</code>, always answers
-       HTTP 200, and <code>{"status": "error"}</code> when anything fails.</p>
+  <div class="mode" id="pass">
+    <div class="label"><i></i>Pass-through mode <span class="chip">default since 2.0</span></div>
+    <p>Everything goes through as it is: method, path, query, headers and any body;
+       the status, headers, cookies and body of the reply, redirects too.</p>
   </div>
 
-  <div class="mode" id="pass">
-    <div class="label"><i></i>Pass-through mode <span class="chip">PROXY_PASS_THROUGH = True</span></div>
-    <p>Everything goes through as it is: method, path, query, headers and any body;
-       the status code, headers and body of the reply come back the same way.</p>
+  <div class="mode" id="json">
+    <div class="label"><i></i>JSON mode <span class="chip">PROXY_PASS_THROUGH = False</span></div>
+    <p>The 1.x behaviour: JSON in, JSON out, adds the caller's <code>username</code>,
+       always HTTP 200, <code>{"status": "error"}</code> on failure.</p>
   </div>
 </div>
 </body>

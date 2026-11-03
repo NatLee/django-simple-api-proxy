@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/docs/images/hero-dark.webp">
-    <img src="https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/docs/images/hero-light.webp" width="880" alt="A client sends GET /my_test_route/items/7 to your Django site. APIProxy on your site maps /my_test_route/ to /get/ and sends GET /get/items/7 on to the target site, https://httpbin.org. The reply comes back the same way. JSON mode, the default, sends JSON, adds the caller's username and always answers HTTP 200. Pass-through mode, PROXY_PASS_THROUGH = True, passes the method, path, query, headers, any body, and the reply's status code, headers and body through as they are.">
+    <img src="https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/docs/images/hero-light.webp" width="880" alt="A client sends GET /my_test_route/items/7 to your Django site. APIProxy on your site maps /my_test_route/ to /get/ and sends GET /get/items/7 on to the target site, https://httpbin.org. The reply comes back the same way. Pass-through mode, the default since 2.0, passes the method, path, query, headers, any body, and the reply's status, headers, cookies, body and redirects through as they are. JSON mode, PROXY_PASS_THROUGH = False, is the 1.x behaviour: JSON in, JSON out, adds the caller's username and always answers HTTP 200.">
   </picture>
 </p>
 
@@ -15,10 +15,33 @@
 
 Django Simple API Proxy turns one route of your Django site into a door to another server. A request that comes in at `/my_test_route/…` goes out to the server you point it at, and the answer comes back the same way, so your browser code, apps and users only ever talk to your site. Handy when the other server has no CORS headers, needs an API key you don't want in the browser, or should only be reachable for people logged in to your site. The proxy is a [Django REST framework](https://www.django-rest-framework.org/) view, so putting your login in front of it takes two lines.
 
-It has two modes:
+Everything goes through as it is: the method, path, query string, headers and body (JSON, forms, files, anything) go to the other server, and its status code, headers, cookies and body come back. Redirects come back too, pointed at your route, so the client keeps going through your site.
 
-- **JSON mode** (the default, and all that 1.0 did): JSON in, JSON out. It adds the caller's `username` to what it sends and always answers HTTP 200.
-- **Pass-through mode** (`PROXY_PASS_THROUGH = True`): everything goes through as it is. The method, path, query string, headers and body (JSON, forms, files, anything) go to the other server; its status code, headers, cookies and body come back to the client.
+The JSON-in, JSON-out behaviour of 1.x is still there, one setting away: see [JSON mode](#json-mode).
+
+## Upgrading to 2.0
+
+2.0 makes pass-through the default. If you upgrade from 1.x and set nothing, your clients get the other server's answers as they are:
+
+| | 1.x | 2.0 |
+|---|---|---|
+| Status code | always 200 | the other server's; 502 or 504 if it can't be reached in time |
+| Failures | `{"status": "error"}` | the other server's own error reply |
+| Reply | JSON only | any content type, with headers and cookies |
+| `username` | added to the query string or JSON body | not added |
+| Headers, forms, files, query strings on `POST` | dropped or refused | passed on |
+| Trailing slash | dropped | kept |
+| Redirects | followed on your server | handed to the client |
+
+You are affected if your clients look for `{"status": "error"}` or count on HTTP 200, if the other server reads `username`, or if you subclass `APIProxy` and override `update_payload()`, `preprocess_request_body()` or `response()`. Those three only run in JSON mode, and `manage.py check` points out subclasses that still override them (`django_simple_api_proxy.W005`).
+
+To keep the 1.x behaviour, add one line to `settings.py`:
+
+```py
+PROXY_PASS_THROUGH = False
+```
+
+or set `pass_through = False` on your subclass. Everything else (settings, URLs, method names) works as in 1.x.
 
 ## Installation
 
@@ -67,46 +90,34 @@ This also installs Django REST framework, [requests](https://requests.readthedoc
 
    ```bash
    python manage.py runserver
-   curl "http://127.0.0.1:8000/my_test_route/?q=django"
+   curl "http://127.0.0.1:8000/my_test_route?q=django"
    ```
 
    httpbin answers with what it received (formatted, and without `headers` and `origin`):
 
    ```json
    {
-     "args": {"q": "django", "username": "#anonymous"},
-     "method": "GET",
-     "url": "https://httpbin.org/get?q=django&username=%23anonymous"
+     "args": {"q": "django"},
+     "url": "https://httpbin.org/get?q=django"
    }
    ```
 
-   That's JSON mode: the query string went along, plus `username`. A path the other server doesn't know gets the proxy's error answer, with HTTP 200:
+   A path the other server doesn't know gets its own 404:
 
    ```bash
-   curl "http://127.0.0.1:8000/my_test_route/nope"
-   # {"status": "error"}
+   curl -i "http://127.0.0.1:8000/my_test_route/nope"
+   # HTTP/1.1 404 Not Found
+   # content-type: text/html
+   # ...
    ```
 
-   and the server log says why: `Could not proxy GET /my_test_route/nope: the API server answered HTTP 404 (text/html), which is not JSON; set PROXY_PASS_THROUGH = True to pass any reply on.`
+   The same goes for `/my_test_route/` with a slash: it maps to `/get/`, which httpbin doesn't have. The proxy keeps your trailing slash, because the other server may care.
 
-To try `POST`, `PUT`, `PATCH` and `DELETE`, set `PROXY_TARGET_PATH = 'anything'`; httpbin's `/anything` echoes every method:
+## What goes through
 
-```bash
-curl -X POST http://127.0.0.1:8000/my_test_route/ \
-     -H 'Content-Type: application/json' -d '{"user": "nat", "password": "hunter2"}'
-# {..., "json": {"password": "hunter2", "user": "nat", "username": "#anonymous"}, "method": "POST", ...}
-```
+Point the route at the whole server with `PROXY_TARGET_PATH = ''`; the examples below use httpbin that way.
 
-## Pass everything through
-
-Turn on pass-through mode when the other server should see the request exactly as your client sent it, and the client should get the answer exactly as the server gave it. In `settings.py`:
-
-```py
-PROXY_PASS_THROUGH = True
-PROXY_TARGET_PATH = ''  # the whole server, not only its /get
-```
-
-Status codes, reason phrases, content types and headers now come back as they are. Here httpbin's teapot, with its own `418 Unknown` (your site's `Date`, `Server` and security headers left out):
+Status codes, reason phrases, content types and headers come back as they are. Here httpbin's teapot, with its own `418 Unknown` (your site's `Date`, `Server` and security headers left out):
 
 ```bash
 curl -i http://127.0.0.1:8000/my_test_route/status/418
@@ -147,7 +158,7 @@ curl "http://127.0.0.1:8000/my_test_route/anything/items?a=1&a=2" -X PUT \
   "files": {"file": "hello\n"},
   "form": {"note": "hi"},
   "headers": {
-    "Content-Type": "multipart/form-data; boundary=------------------------VfYdKtC57F043OvYAO8pbu",
+    "Content-Type": "multipart/form-data; boundary=------------------------O3Q6yIpVNGhVzhwQ2ShfTu",
     "X-Hello": "world",
     ...
   },
@@ -171,7 +182,18 @@ curl -i "http://127.0.0.1:8000/my_test_route/response-headers?X-Powered-By=httpb
 # ...
 ```
 
-And a path the other server doesn't know is its own 404 now, not `{"status": "error"}`.
+Redirects go back to the client. A `Location` on the other server is rewritten to go through your route, and the cookies on the redirect come along, so a client that follows it stays on your site:
+
+```bash
+curl -i "http://127.0.0.1:8000/my_test_route/cookies/set?flavour=oatmeal"
+# HTTP/1.1 302 Found
+# Location: /my_test_route/cookies        (httpbin said /cookies)
+# Set-Cookie: flavour=oatmeal; Path=/
+# ...
+
+curl -L -c jar.txt -b jar.txt "http://127.0.0.1:8000/my_test_route/cookies/set?flavour=oatmeal"
+# {"cookies": {"flavour": "oatmeal"}}
+```
 
 ## Settings
 
@@ -179,8 +201,8 @@ And a path the other server doesn't know is its own 404 now, not `{"status": "er
 |---|---|---|
 | `TARGET_API_URL` | `'https://httpbin.org'` | The server requests go to, without a trailing slash. Required. |
 | `PROXY_ROUTE_PATH` | `'my_test_route'` | The route on your site that is proxied. Required. |
-| `PROXY_TARGET_PATH` | `'get'` | The path on that server the route maps to. Required; `''` works in pass-through mode. |
-| `PROXY_PASS_THROUGH` | `True` | Pass everything through instead of JSON in, JSON out. Optional, `False` by default. |
+| `PROXY_TARGET_PATH` | `'get'` | The path on that server the route maps to; `''` for the whole server. Required. |
+| `PROXY_PASS_THROUGH` | `False` | `True` (the default since 2.0) passes everything through; `False` is the [JSON mode](#json-mode) of 1.x. Optional. |
 
 The proxy reads them when Django loads your URLs. If `TARGET_API_URL` or `PROXY_TARGET_PATH` is missing, `manage.py check` and `runserver` stop and tell you what to add (a missing `PROXY_ROUTE_PATH` already stops them at the line of your `urls.py` that uses it):
 
@@ -189,32 +211,33 @@ django.core.exceptions.ImproperlyConfigured: django-simple-api-proxy needs TARGE
     TARGET_API_URL = 'https://httpbin.org'  # the server requests are sent on to
 ```
 
-In JSON mode, write the paths without slashes at either end and don't leave `PROXY_TARGET_PATH` empty, or the proxy builds wrong URLs (see [Known limitations](#known-limitations)). `manage.py check` and `runserver` warn about that, without stopping:
+They also warn, without stopping, about settings that can't work, such as a `TARGET_API_URL` without `https://`:
 
 ```
 System check identified some issues:
 
 WARNINGS:
-?: (django_simple_api_proxy.W003) PROXY_ROUTE_PATH starts or ends with '/', so the proxy builds wrong URLs: with 'my_test_route/', /my_test_route/abc goes to /getabc.
-	HINT: Write it without slashes: PROXY_ROUTE_PATH = 'my_test_route'.
+?: (django_simple_api_proxy.W001) TARGET_API_URL does not start with http:// or https://, so no request can reach it.
+	HINT: Write the full address, e.g. TARGET_API_URL = 'https://httpbin.org'.
 
 System check identified 1 issue (0 silenced).
 ```
 
-Pass-through mode trims those slashes itself. To silence a warning, add its id to `SILENCED_SYSTEM_CHECKS`.
+In JSON mode they also warn about slashes around the two paths, which build wrong URLs there (see [JSON mode](#json-mode)); pass-through mode trims those slashes itself. To silence a warning, add its id to `SILENCED_SYSTEM_CHECKS`.
 
 With the quick start settings, paths map like this:
 
-| Request to your site | JSON mode sends | Pass-through mode sends |
+| Request to your site | Pass-through mode sends | JSON mode sends |
 |---|---|---|
-| `/my_test_route` or `/my_test_route/` | `https://httpbin.org/get` | `…/get` or `…/get/` |
-| `GET /my_test_route/items/42/?a=1` | `https://httpbin.org/get/items/42?a=1&username=%23anonymous` | `https://httpbin.org/get/items/42/?a=1` |
+| `/my_test_route` or `/my_test_route/` | `https://httpbin.org/get` or `…/get/` | `https://httpbin.org/get` |
+| `GET /my_test_route/items/42/?a=1` | `https://httpbin.org/get/items/42/?a=1` | `https://httpbin.org/get/items/42?a=1&username=%23anonymous` |
 
 ## Customising
 
-Subclass `APIProxy`. This one only lets logged-in users through and also sends their e-mail address:
+Subclass `APIProxy`. This one only lets logged-in users through, keeps your site's own credentials on your site, and adds an API key on the server, so the key never reaches the browser:
 
 ```py
+from django.conf import settings
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -227,10 +250,13 @@ class MyAPIProxy(APIProxy):
     authentication_classes = [SessionAuthentication, JWTAuthentication]
     permission_classes = [IsAuthenticated]
 
-    def update_payload(self, request, params):
-        params = super().update_payload(request, params)  # adds "username"
-        params["email"] = request.user.email
-        return params
+    def upstream_headers(self, request):
+        headers = super().upstream_headers(request)
+        headers.pop("Cookie", None)  # your session cookie stays here
+        headers.pop("Authorization", None)  # and so does your JWT
+        headers["X-Api-Key"] = settings.UPSTREAM_API_KEY
+        headers["X-User"] = request.user.get_username()
+        return headers
 ```
 
 `JWTAuthentication` comes from a separate package: `pip install djangorestframework-simplejwt`. With `SessionAuthentication`, Django REST framework also checks the CSRF token on `POST`, `PUT`, `PATCH` and `DELETE` from logged-in browsers.
@@ -249,88 +275,109 @@ urlpatterns += [
 ]
 ```
 
-A subclass can also be a pass-through proxy of its own, next to the one from your settings. This one adds an API key on the server, so the key never reaches the browser, and keeps your site's cookies on your site:
-
-```py
-from django.conf import settings
-
-from django_simple_api_proxy.views import APIProxy
-
-
-class KeyedProxy(APIProxy):
-    pass_through = True
-    target_api_url = "https://httpbin.org"  # your API server
-    proxy_route_path = "keyed"
-    proxy_target_path = ""
-
-    def upstream_headers(self, request):
-        headers = super().upstream_headers(request)
-        headers.pop("Cookie", None)
-        headers["Authorization"] = f"Bearer {settings.UPSTREAM_API_KEY}"
-        return headers
-```
-
-Route it like `MyAPIProxy` above, with `"keyed"` in place of `settings.PROXY_ROUTE_PATH`. httpbin's `/headers` shows what arrived:
+A logged-in request with a cookie and a JWT, to httpbin's `/headers` (with `PROXY_TARGET_PATH = ''` and `UPSTREAM_API_KEY = 'demo-key'`):
 
 ```bash
-curl -H "Cookie: sessionid=abc" -H "X-Hello: world" http://127.0.0.1:8000/keyed/headers
-# {"headers": {"Authorization": "Bearer demo-key", "X-Hello": "world", ...}}   no Cookie
+curl -H "Authorization: Bearer $TOKEN" -H "Cookie: sessionid=abc" \
+     http://127.0.0.1:8000/my_test_route/headers
+# {"headers": {"X-Api-Key": "demo-key", "X-User": "nat", ...}}   no Authorization, no Cookie
 ```
 
-What else a subclass can change:
+**Why drop `Cookie` and `Authorization`?** Pass-through mode sends the client's headers on as they are, cookies and `Authorization` included. That is what makes logins on the other server work through your site. But if your site uses them for its own login and the other server isn't yours, they would reach a third party, so drop them in `upstream_headers()` as above.
+
+What a subclass can change:
 
 | Override | By default | Override it to |
 |---|---|---|
 | `authentication_classes`, `permission_classes` | `[]`: no login, anyone can use the proxy | require a login, as above |
 | `target_api_url`, `proxy_route_path`, `proxy_target_path` | the three settings | proxy a second server from another subclass |
-| `pass_through` | `PROXY_PASS_THROUGH` | switch the mode for one subclass |
-| `update_payload(request, params)` | sets `username` (JSON mode) | add or drop what is sent |
-| `upstream_headers(request)` | the client's headers (pass-through mode) | add an API key, drop cookies |
-| `send_request(method, url, params=None, data=None, json=None, timeout=180, verify=True, headers=None)` | calls `requests.request` | change the timeout, reuse a session |
-| `response(resp)` | returns the JSON as is, non-ASCII text unescaped (JSON mode) | reshape the reply |
-| `relay_response(upstream)` | copies status, headers, cookies and body (pass-through mode) | change the reply |
+| `pass_through` | `PROXY_PASS_THROUGH` (`True`) | switch the mode for one subclass |
+| `upstream_headers(request)` | the client's headers | add an API key, drop cookies |
+| `relay_response(upstream)` | copies status, headers, cookies and body | change the reply |
+| `rewrite_location(request, location)` | points `Location` at your route, see below | map redirects differently |
+| `send_request(method, url, params=None, data=None, json=None, timeout=180, verify=True, headers=None, allow_redirects=None)` | calls `requests.request` | change the timeout, reuse a session |
 | `get`, `post`, `put`, `patch`, `delete`, `head`, `options` | forward the request | replace one method completely |
+| `update_payload(request, params)`, `response(resp)` | JSON mode only, see [JSON mode](#json-mode) | |
 
-If you override `send_request` and use pass-through mode, accept `headers` (or `**kwargs`): pass-through mode sends the client's headers through it.
+If you override `send_request`, accept `**kwargs`: pass-through mode also passes `headers` and `allow_redirects=False` through it.
 
 ## How requests are forwarded
 
-| | JSON mode (default) | Pass-through mode |
+| | Pass-through mode (default) | JSON mode (`PROXY_PASS_THROUGH = False`) |
 |---|---|---|
-| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. `HEAD` goes as `GET`; Django REST framework answers `OPTIONS` | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, each as itself |
-| Path | the route swapped for `PROXY_TARGET_PATH`, trailing slash dropped | the route swapped, the rest kept exactly, trailing slash too |
-| Query string | `GET` only, plus `username` | every method, exactly as sent |
-| Request headers | none: requests' defaults | the client's, see below |
-| Request body | a JSON object, plus `username` | any body, byte for byte |
-| Reply status | always 200 | the other server's |
-| Reply headers | none from the other server: `Content-Type: application/json` | the other server's, see below |
-| Reply body | the JSON, encoded again | byte for byte, decompressed |
-| On failure | 200 with `{"status": "error"}` | 502 (can't reach it) or 504 (no answer in time) with `{"status": "error"}` |
+| Methods | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`, each as itself | `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. `HEAD` goes as `GET`; Django REST framework answers `OPTIONS` |
+| Path | the route swapped, the rest kept exactly, trailing slash too | the route swapped for `PROXY_TARGET_PATH`, trailing slash dropped |
+| Query string | every method, exactly as sent | `GET` only, plus `username` |
+| Request headers | the client's, see below | none: requests' defaults |
+| Request body | any body, byte for byte | a JSON object, plus `username` |
+| Reply status | the other server's | always 200 |
+| Reply headers | the other server's, see below | none from the other server: `Content-Type: application/json` |
+| Reply body | byte for byte, decompressed | the JSON, encoded again |
+| Redirects | handed to the client, `Location` pointed at your route | followed on your server |
+| On failure | 502 (can't reach it) or 504 (no answer in time) with `{"status": "error"}` | 200 with `{"status": "error"}` |
 
 Both modes:
 
 - **Login**: the proxy is a Django REST framework view, so `authentication_classes` and `permission_classes` work in both modes, and a refused request is never forwarded.
 - **TLS and timeout**: the other server's certificate is checked, and it has 180 seconds to answer. Override `send_request` to change either.
-- **Redirects** are followed on your server, so the client gets the final answer.
 - **Other methods** (`TRACE`, …) get `405 Method Not Allowed` and are not forwarded.
 - **Logs**: each request is logged at `DEBUG` level, failures at `ERROR` level with the reason and the traceback. The proxy's own log lines never hold bodies or header values. See [Logging](#logging).
-
-JSON mode:
-
-- **`username`**: the user Django REST framework authenticated, or `#anonymous`. The stock `APIProxy` has no authentication classes, so it sends `#anonymous` even for users logged in to your site; [subclass it](#customising) to send real names. A `username` sent by the client is replaced. User models without a `username` field send what `get_username()` returns.
-- **Errors**: if the body is not a JSON object, the other server can't be reached or doesn't answer in time, or its reply is not JSON, the client gets `{"status": "error"}` with HTTP 200, and the log says which it was.
 
 Pass-through mode:
 
 - **Request headers**: all the client sends, cookies and `Authorization` included, except the ones that only describe one connection (`Connection` and the headers it names, `Keep-Alive`, `Proxy-Authorization`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade`) and the ones requests sets itself (`Host`, `Content-Length`, `Accept-Encoding`, `Expect`). The proxy adds nothing of its own (no `username`, no `X-Forwarded-For`); requests only fills in `User-Agent` and `Accept` when the client sent none.
 - **Reply headers**: all the other server sends, every `Set-Cookie` included, except the per-connection ones, `Content-Encoding` and `Content-Length` (requests has already decompressed the body), and `Date` and `Server` (your web server sets its own).
-- **Your site's cookies go along.** If your site's own login uses cookies or `Authorization`, and the other server is not yours, drop them in `upstream_headers()` as `KeyedProxy` does above.
+- **Redirects** (301, 302, 303, 307, 308) and other replies with a `Location` (such as 201) come back with it rewritten:
+  - an address on the other server under `PROXY_TARGET_PATH` goes through your route: with the quick start settings, `https://httpbin.org/get/next` and `/get/next` both become `/my_test_route/next`;
+  - a relative one (`next`, `../list`, `?page=2`) stays as it is, because it already resolves against your route;
+  - an address on another host stays as it is, and one on the other server outside `PROXY_TARGET_PATH` becomes absolute, so it still leads there.
 - **Bodies are read into memory**, in both directions. Django refuses request bodies over [`DATA_UPLOAD_MAX_MEMORY_SIZE`](https://docs.djangoproject.com/en/stable/ref/settings/#data-upload-max-memory-size) (2.5 MB by default) with a 400; raise it for bigger uploads. Streams (server-sent events, WebSockets) don't go through.
-- **Nothing in the reply is rewritten**: links in HTML and `Location` headers still point at the other server, and a cookie set by a redirect the proxy followed is lost.
+- **Bodies and cookies are not rewritten**: links in HTML still point at the other server, and a cookie's `Path` and `Domain` stay as the other server set them.
+
+## JSON mode
+
+`PROXY_PASS_THROUGH = False` (or `pass_through = False` on a subclass) brings back the 1.x proxy: JSON in, JSON out. With the quick start settings:
+
+```bash
+curl "http://127.0.0.1:8000/my_test_route/?q=django"
+# {"args": {"q": "django", "username": "#anonymous"}, ..., "url": "https://httpbin.org/get?q=django&username=%23anonymous"}
+
+curl "http://127.0.0.1:8000/my_test_route/nope"
+# {"status": "error"}
+```
+
+and the server log says why: `Could not proxy GET /my_test_route/nope: the API server answered HTTP 404 (text/html), which is not JSON; set PROXY_PASS_THROUGH = True to pass any reply on.`
+
+- **`username`** goes along with every request: the user Django REST framework authenticated, or `#anonymous`. The stock `APIProxy` has no authentication classes, so it sends `#anonymous` even for users logged in to your site; give your subclass authentication classes to send real names. A `username` sent by the client is replaced. User models without a `username` field send what `get_username()` returns.
+- **Errors**: if the body is not a JSON object, the other server can't be reached or doesn't answer in time, or its reply is not JSON, the client gets `{"status": "error"}` with HTTP 200, and the log says which it was.
+- **Redirects** are followed on your server, so the client gets the final answer.
+
+A JSON-mode subclass changes what is sent through `update_payload()`. This one also sends the user's e-mail address:
+
+```py
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.permissions import IsAuthenticated
+from rest_framework_simplejwt.authentication import JWTAuthentication
+
+from django_simple_api_proxy.views import APIProxy
+
+
+class MyJSONProxy(APIProxy):
+    pass_through = False  # JSON mode, as in 1.x
+    authentication_classes = [SessionAuthentication, JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def update_payload(self, request, params):
+        params = super().update_payload(request, params)  # adds "username"
+        params["email"] = request.user.email
+        return params
+```
+
+`response(resp)` reshapes the decoded JSON before it goes back (by default it returns it as is, non-ASCII text unescaped).
 
 ### Known limitations
 
-In JSON mode, the proxy behaves like this, and keeps doing so for compatibility. Pass-through mode has none of these.
+These are why pass-through became the default; JSON mode keeps them for compatibility:
 
 1. Errors and the other server's own status codes (404, 201, …) all reach the client as HTTP 200.
 2. A `PROXY_ROUTE_PATH` with a trailing slash, or an empty `PROXY_TARGET_PATH`, builds wrong URLs: with `'my_test_route/'`, `/my_test_route/abc` goes to `/getabc`. `PROXY_ROUTE_PATH` is also used as a regular expression, and `/my_test_routeabc` reaches the proxy too.
@@ -338,22 +385,22 @@ In JSON mode, the proxy behaves like this, and keeps doing so for compatibility.
 
 ## Logging
 
-The proxy logs through loguru: every request at `DEBUG` level, failures at `ERROR` level with the reason and the traceback. Request bodies are logged by field name or size only, never by value, and headers by name only. The `POST` from the quick start logs this in JSON mode:
+The proxy logs through loguru: every request at `DEBUG` level, failures at `ERROR` level with the reason and the traceback. Request bodies are logged by size or field name only, never by value, and headers by name only. The `PUT` from [What goes through](#what-goes-through) logs this:
 
 ```log
-2026-11-03 14:41:12.254 | DEBUG    | django_simple_api_proxy.views:_forward:275 - Proxy POST /my_test_route/
-2026-11-03 14:41:12.254 | DEBUG    | django_simple_api_proxy.views:preprocess_request_body:189 - JSON body fields: ['user', 'password']
-2026-11-03 14:41:12.254 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:155 - Upstream URL: https://httpbin.org/anything
-2026-11-03 14:41:12.254 | DEBUG    | django_simple_api_proxy.views:update_payload:172 - Username: #anonymous
+2026-11-03 15:19:50.689 | DEBUG    | django_simple_api_proxy.views:_forward:322 - Proxy PUT /my_test_route/anything/items
+2026-11-03 15:19:50.689 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:157 - Upstream URL: https://httpbin.org/anything/items
+2026-11-03 15:19:50.689 | DEBUG    | django_simple_api_proxy.views:_pass_through:365 - Forwarding headers ['Accept', 'Content-Type', 'User-Agent', 'X-Hello'] and 306 bytes of body
+2026-11-03 15:19:51.344 | DEBUG    | django_simple_api_proxy.views:_pass_through:375 - API server answered 200 (application/json, 557 bytes)
 ```
 
-and the `PUT` from [Pass everything through](#pass-everything-through) this:
+and a `POST` of `{"user": "nat", "password": "hunter2"}` in JSON mode this:
 
 ```log
-2026-11-03 14:41:16.802 | DEBUG    | django_simple_api_proxy.views:_forward:275 - Proxy PUT /my_test_route/anything/items
-2026-11-03 14:41:16.802 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:155 - Upstream URL: https://httpbin.org/anything/items
-2026-11-03 14:41:16.802 | DEBUG    | django_simple_api_proxy.views:_pass_through:318 - Forwarding headers ['Accept', 'Content-Type', 'User-Agent', 'X-Hello'] and 306 bytes of body
-2026-11-03 14:41:17.394 | DEBUG    | django_simple_api_proxy.views:_pass_through:326 - API server answered 200 (application/json, 557 bytes)
+2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:_forward:322 - Proxy POST /my_test_route/
+2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:preprocess_request_body:191 - JSON body fields: ['user', 'password']
+2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:157 - Upstream URL: https://httpbin.org/anything
+2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:update_payload:174 - Username: #anonymous
 ```
 
 Unless you configure it, loguru prints all of this to stderr. Its default handler also prints the values of local variables in tracebacks (`diagnose=True`), so when a request fails, its body can still show up in the traceback. If bodies may hold passwords or tokens, turn the proxy's log off, or keep only `INFO` and up without the variable values:
@@ -389,7 +436,7 @@ pip install -e ".[test]"
 pytest tests
 ```
 
-The tests don't need the internet. JSON mode is tested against a fake `requests.request`; pass-through mode against a real HTTP server the tests start on `127.0.0.1` (`tests/upstream.py`). `tests/test_readme.py` runs the Python blocks of this README, so keep them working when you edit it.
+The tests don't need the internet. Pass-through mode is tested against a real HTTP server the tests start on `127.0.0.1` (`tests/upstream.py`); JSON mode against a fake `requests.request`, with the test settings pinned to `PROXY_PASS_THROUGH = False` so the 1.x tests keep running unchanged. `tests/test_readme.py` runs the Python blocks of this README, so keep them working when you edit it.
 
 To run the CI combinations locally:
 

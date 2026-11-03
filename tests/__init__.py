@@ -45,7 +45,12 @@ settings.configure(
 
     TARGET_API_URL = 'https://httpbin.org',
     PROXY_ROUTE_PATH = 'my_test_route',
-    PROXY_TARGET_PATH = 'get'
+    PROXY_TARGET_PATH = 'get',
+    # The stock APIProxy of these tests runs in the JSON mode of 1.x, so the 1.x
+    # tests keep checking it unchanged. Pass-through mode, the default since 2.0,
+    # is tested through subclasses (tests/urls_pass_through.py) and in a fresh
+    # process without this setting (tests/test_settings.py).
+    PROXY_PASS_THROUGH = False,
 
     ###################################
 )

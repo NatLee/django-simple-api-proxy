@@ -9,9 +9,11 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
 GZIPPED_TEXT = "compressed upstream text " * 20
@@ -37,8 +39,16 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         route = self.path.split("?")[0]
+        redirect = re.search(r"/redirect/(\d{3})$", route)
 
-        if route.startswith("/status/"):
+        if redirect:
+            # .../redirect/302?location=... answers with that status, Location and a cookie.
+            location = parse_qs(urlsplit(self.path).query)["location"][0]
+            self._reply(int(redirect.group(1)), b"moved", [
+                ("Content-Type", "text/plain"), ("Location", location),
+                ("Set-Cookie", "visited=yes; Path=/; HttpOnly"),
+            ])
+        elif route.startswith("/status/"):
             status = int(route.split("/")[2])
             headers = [("X-Upstream", "yes"), ("Allow", "GET"), ("Vary", "Origin")]
             if status not in (204, 304):
