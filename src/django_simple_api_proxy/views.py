@@ -90,8 +90,11 @@ class APIProxy(APIView):
         The value is the name of the user Django REST framework authenticated, or
         ``#anonymous``. A ``username`` sent by the client is replaced.
         """
-        # A custom user model without `username` ends in {"status": "error"}.
-        username = request.user.username or ANONYMOUS_USERNAME  # type: ignore[union-attr]
+        user = request.user
+        username = getattr(user, "username", None)
+        if username is None and hasattr(user, "get_username"):
+            username = user.get_username()  # a custom user model without `username`
+        username = username or ANONYMOUS_USERNAME
         logger.debug("Username: {}", username)
         params.update({"username": username})
         return params

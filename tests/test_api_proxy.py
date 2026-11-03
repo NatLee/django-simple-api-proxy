@@ -403,3 +403,35 @@ class UpdatePayloadTests(SimpleTestCase):
 
         self.assertEqual(APIProxy().update_payload(request, {"q": 1}),
                          {"q": 1, "username": "alice"})
+
+    def test_user_model_without_username_field_sends_its_username(self):
+        # Before 1.1, a custom user model with USERNAME_FIELD = "email" and no
+        # `username` made every logged-in request end in {"status": "error"}.
+        class EmailUser:
+            is_authenticated = True
+
+            def get_username(self):
+                return "alice@example.com"
+
+        request = mock.Mock(user=EmailUser())
+
+        self.assertEqual(APIProxy().update_payload(request, {}),
+                         {"username": "alice@example.com"})
+
+    @mock.patch("django_simple_api_proxy.views.requests.request")
+    def test_user_model_without_username_field_is_proxied(self, upstream):
+        class EmailUser:
+            is_authenticated = True
+            is_active = True
+
+            def get_username(self):
+                return "alice@example.com"
+
+        upstream.return_value = upstream_reply({"ok": True})
+        request = APIRequestFactory().get("/my_test_route/")
+        force_authenticate(request, user=EmailUser())
+
+        resp = APIProxy.as_view()(request, resource="")
+
+        self.assertEqual(json.loads(resp.content), {"ok": True})
+        self.assertEqual(upstream.call_args.kwargs["params"], {"username": "alice@example.com"})
