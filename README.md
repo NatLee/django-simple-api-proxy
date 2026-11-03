@@ -388,19 +388,19 @@ These are why pass-through became the default; JSON mode keeps them for compatib
 The proxy logs through loguru: every request at `DEBUG` level, failures at `ERROR` level with the reason and the traceback. Request bodies are logged by size or field name only, never by value, and headers by name only. The `PUT` from [What goes through](#what-goes-through) logs this:
 
 ```log
-2026-11-03 15:19:50.689 | DEBUG    | django_simple_api_proxy.views:_forward:322 - Proxy PUT /my_test_route/anything/items
-2026-11-03 15:19:50.689 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:157 - Upstream URL: https://httpbin.org/anything/items
-2026-11-03 15:19:50.689 | DEBUG    | django_simple_api_proxy.views:_pass_through:365 - Forwarding headers ['Accept', 'Content-Type', 'User-Agent', 'X-Hello'] and 306 bytes of body
-2026-11-03 15:19:51.344 | DEBUG    | django_simple_api_proxy.views:_pass_through:375 - API server answered 200 (application/json, 557 bytes)
+2026-11-03 16:39:45.063 | DEBUG    | django_simple_api_proxy.pass_through:_forward:258 - Proxy PUT /my_test_route/anything/items
+2026-11-03 16:39:45.064 | DEBUG    | django_simple_api_proxy.pass_through:get_proxy_path:135 - Upstream URL: https://httpbin.org/anything/items
+2026-11-03 16:39:45.064 | DEBUG    | django_simple_api_proxy.pass_through:_forward:265 - Forwarding headers ['Accept', 'Content-Type', 'User-Agent', 'X-Hello'] and 306 bytes of body
+2026-11-03 16:39:45.714 | DEBUG    | django_simple_api_proxy.pass_through:_forward:275 - API server answered 200 (application/json, 557 bytes)
 ```
 
 and a `POST` of `{"user": "nat", "password": "hunter2"}` in JSON mode this:
 
 ```log
-2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:_forward:322 - Proxy POST /my_test_route/
-2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:preprocess_request_body:191 - JSON body fields: ['user', 'password']
-2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:157 - Upstream URL: https://httpbin.org/anything
-2026-11-03 15:20:04.450 | DEBUG    | django_simple_api_proxy.views:update_payload:174 - Username: #anonymous
+2026-11-03 16:40:00.380 | DEBUG    | django_simple_api_proxy.json_mode:_forward:171 - Proxy POST /my_test_route/
+2026-11-03 16:40:00.383 | DEBUG    | django_simple_api_proxy.json_mode:preprocess_request_body:101 - JSON body fields: ['user', 'password']
+2026-11-03 16:40:00.383 | DEBUG    | django_simple_api_proxy.json_mode:get_proxy_path:146 - Upstream URL: https://httpbin.org/anything
+2026-11-03 16:40:00.383 | DEBUG    | django_simple_api_proxy.json_mode:update_payload:84 - Username: #anonymous
 ```
 
 Unless you configure it, loguru prints all of this to stderr. Its default handler also prints the values of local variables in tracebacks (`diagnose=True`), so when a request fails, its body can still show up in the traceback. If bodies may hold passwords or tokens, turn the proxy's log off, or keep only `INFO` and up without the variable values:
