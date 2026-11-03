@@ -2,8 +2,8 @@
 
 [![Test](https://github.com/NatLee/django-simple-api-proxy/actions/workflows/test.yml/badge.svg)](https://github.com/NatLee/django-simple-api-proxy/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/django-simple-api-proxy)](https://pypi.org/project/django-simple-api-proxy/)
-[![Python 3.8–3.14](https://img.shields.io/badge/python-3.8%20%E2%80%93%203.14-3776ab)](#supported-versions)
-[![Django 4.0–6.1](https://img.shields.io/badge/django-4.0%20%E2%80%93%206.1-0c4b33)](#supported-versions)
+[![Python](https://img.shields.io/pypi/pyversions/django-simple-api-proxy)](#supported-versions)
+[![Django](https://img.shields.io/pypi/frameworkversions/django/django-simple-api-proxy?label=django)](#supported-versions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/NatLee/django-simple-api-proxy/blob/main/LICENSE)
 
 Put another HTTP API behind a route on your Django site. Requests to `/my_test_route/…` are sent on to the API server you configure, with the route swapped for the API's path and the caller's username attached, and the JSON the API answers with goes straight back to the client. The proxy is a [Django REST framework](https://www.django-rest-framework.org/) view, so putting your site's login in front of the API takes a couple of lines, and anything else is one overridden method away.
