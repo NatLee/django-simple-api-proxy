@@ -281,7 +281,45 @@ class LoggingTests(SimpleTestCase):
         self.assertEqual(record["level"].name, "ERROR")
         self.assertIs(record["exception"].type, requests.ConnectionError)
         self.assertEqual(record["message"],
-                         'Could not proxy GET /my_test_route/, replying {"status": "error"}')
+                         'Could not proxy GET /my_test_route/: could not connect to the API '
+                         'server. Replying {"status": "error"}')
+
+    def test_failure_log_says_why_in_one_line(self, upstream):
+        cases = [
+            ("form body", lambda: self.client.post(
+                "/my_test_route/", data="a=1", content_type="application/x-www-form-urlencoded"),
+             "the request body is not JSON (Content-Type: application/x-www-form-urlencoded); "
+             "JSON mode only forwards JSON, set PROXY_PASS_THROUGH = True to forward any body"),
+            ("JSON array", lambda: self.client.post(
+                "/my_test_route/", data="[1, 2]", content_type="application/json"),
+             "the JSON body must be an object ({...}), not an array"),
+            ("HTML reply", lambda: self.client.get("/my_test_route/missing"),
+             "the API server answered HTTP 404 (text/html), which is not JSON; "
+             "set PROXY_PASS_THROUGH = True to pass any reply on"),
+            ("timeout", lambda: self.client.get("/my_test_route/slow"),
+             "the API server did not answer in time"),
+        ]
+        html = mock.Mock(status_code=404, headers=requests.structures.CaseInsensitiveDict(
+            {"Content-Type": "text/html"}))
+        html.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+
+        def api_server(**kwargs):
+            if kwargs["url"].endswith("/missing"):
+                return html
+            raise requests.ReadTimeout("read timed out")
+
+        upstream.side_effect = api_server
+        for name, send, reason in cases:
+            with self.subTest(name):
+                errors = self.capture("ERROR")
+
+                resp = send()
+
+                self.assertEqual(resp.json(), {"status": "error"})
+                self.assertEqual(errors[-1].record["message"],
+                                 f"Could not proxy {resp.wsgi_request.method} "
+                                 f"{resp.wsgi_request.path}: {reason}. "
+                                 'Replying {"status": "error"}')
 
     def test_debug_log_says_what_was_forwarded_where(self, upstream):
         upstream.return_value = upstream_reply({})
@@ -403,3 +441,35 @@ class UpdatePayloadTests(SimpleTestCase):
 
         self.assertEqual(APIProxy().update_payload(request, {"q": 1}),
                          {"q": 1, "username": "alice"})
+
+    def test_user_model_without_username_field_sends_its_username(self):
+        # Before 1.1, a custom user model with USERNAME_FIELD = "email" and no
+        # `username` made every logged-in request end in {"status": "error"}.
+        class EmailUser:
+            is_authenticated = True
+
+            def get_username(self):
+                return "alice@example.com"
+
+        request = mock.Mock(user=EmailUser())
+
+        self.assertEqual(APIProxy().update_payload(request, {}),
+                         {"username": "alice@example.com"})
+
+    @mock.patch("django_simple_api_proxy.views.requests.request")
+    def test_user_model_without_username_field_is_proxied(self, upstream):
+        class EmailUser:
+            is_authenticated = True
+            is_active = True
+
+            def get_username(self):
+                return "alice@example.com"
+
+        upstream.return_value = upstream_reply({"ok": True})
+        request = APIRequestFactory().get("/my_test_route/")
+        force_authenticate(request, user=EmailUser())
+
+        resp = APIProxy.as_view()(request, resource="")
+
+        self.assertEqual(json.loads(resp.content), {"ok": True})
+        self.assertEqual(upstream.call_args.kwargs["params"], {"username": "alice@example.com"})

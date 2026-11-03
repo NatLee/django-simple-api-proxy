@@ -49,6 +49,7 @@ INSTALLED_APPS = [
 TARGET_API_URL = 'https://httpbin.org'
 PROXY_ROUTE_PATH = 'my_test_route'
 PROXY_TARGET_PATH = 'get'
+# PROXY_PASS_THROUGH = True  # pass everything through (see the README)
 
 ###################################
 

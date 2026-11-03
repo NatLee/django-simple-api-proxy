@@ -9,7 +9,7 @@ setuptools.setup(
     author='Nat Lee',
     author_email='natlee.work@gmail.com',
     description='Easy to proxy any APIs you want.',
-    keywords='django, api, proxy, proxy pass',
+    keywords='django, api, proxy, proxy pass, reverse proxy, pass-through',
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/NatLee/django-simple-api-proxy',
@@ -22,6 +22,8 @@ setuptools.setup(
     },
     package_dir={'': 'src'},
     packages=setuptools.find_packages(where='src'),
+    # py.typed: type checkers use the package's type hints.
+    package_data={'django_simple_api_proxy': ['py.typed']},
     classifiers=[
         # see https://pypi.org/classifiers/
         'Development Status :: 5 - Production/Stable',
