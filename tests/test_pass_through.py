@@ -6,7 +6,7 @@ Requests go through Django's test client, the proxy, requests and a socket to
 import gzip
 import json
 from unittest import mock
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -326,12 +326,6 @@ class ResponseTests(UpstreamTestCase):
         self.assertTrue(session["httponly"])
         self.assertEqual(session["samesite"], "Lax")
 
-    def test_redirects_are_followed_on_the_server(self):
-        resp = self.client.get("/my_test_route/redirect")
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(echoed(resp)[1], "/echo/after-redirect")
-
     def test_json_reply_is_not_rewritten(self):
         resp = self.client.get("/my_test_route/echo")
 
@@ -407,6 +401,116 @@ class LoggingTests(UpstreamTestCase):
         self.assertIn("API server answered 200 (application/json,", log)
         self.assertNotIn("hunter2", log)
         self.assertNotIn("s3cret-token", log)
+
+
+def redirect_to(location, status=302, path="/my_test_route/redirect"):
+    """A path on the proxy that makes the local API server answer `status` to `location`."""
+    return f"{path}/{status}?location={quote(location, safe='')}"
+
+
+@override_settings(ROOT_URLCONF="tests.urls_pass_through")
+class RedirectTests(UpstreamTestCase):
+    """Pass-through mode hands redirects to the client, pointed back through the proxy."""
+
+    def test_every_redirect_status_comes_back_unfollowed(self):
+        for status in [301, 302, 303, 307, 308]:
+            with self.subTest(status=status):
+                resp = self.client.post(redirect_to("/echo/next", status))
+
+                self.assertEqual(resp.status_code, status)
+                self.assertEqual(resp.content, b"moved")  # the redirect itself, not /echo/next
+                self.assertEqual(resp["Location"], "/my_test_route/echo/next")
+
+    def test_absolute_location_on_the_api_server_goes_through_the_route(self):
+        resp = self.client.get(redirect_to(self.upstream.url + "/echo/next?x=1#top"))
+
+        self.assertEqual(resp["Location"], "/my_test_route/echo/next?x=1#top")
+
+    def test_relative_locations_stay_relative(self):
+        for location in ["next", "../list", "?page=2", "#part"]:
+            with self.subTest(location=location):
+                resp = self.client.get(redirect_to(location))
+
+                self.assertEqual(resp["Location"], location)
+
+    def test_locations_on_other_hosts_stay_as_they_are(self):
+        for location in ["https://example.com/elsewhere?a=1", "//example.com/x",
+                         self.upstream.url.replace("127.0.0.1", "localhost") + "/echo"]:
+            with self.subTest(location=location):
+                resp = self.client.get(redirect_to(location))
+
+                self.assertEqual(resp["Location"], location)
+
+    def test_cookies_on_the_redirect_come_back(self):
+        resp = self.client.get(redirect_to("/echo/next"))
+
+        self.assertEqual(resp.cookies["visited"].value, "yes")
+        self.assertTrue(resp.cookies["visited"]["httponly"])
+
+    def test_client_following_the_redirect_comes_back_through_the_proxy(self):
+        resp = self.client.get(redirect_to(self.upstream.url + "/echo/next"), follow=True)
+
+        self.assertEqual(resp.redirect_chain, [("/my_test_route/echo/next", 302)])
+        self.assertEqual(echoed(resp)[1], "/echo/next")
+
+    def test_location_of_other_replies_is_rewritten_too(self):
+        resp = self.client.post(redirect_to("/echo/items/9", 201))
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp["Location"], "/my_test_route/echo/items/9")
+
+    def test_target_path_is_swapped_back_for_the_route(self):
+        class UnderEcho(PassThroughProxy):
+            proxy_target_path = "echo"
+
+        view = UnderEcho.as_view()
+        factory = APIRequestFactory()
+        for location, expected in [
+            (self.upstream.url + "/echo/a?b=1", "/my_test_route/a?b=1"),
+            ("/echo/a", "/my_test_route/a"),
+            ("/echo", "/my_test_route"),
+            # On the API server but outside /echo: the client has to go there itself.
+            ("/login", self.upstream.url + "/login"),
+            ("/echoes", self.upstream.url + "/echoes"),
+            (self.upstream.url + "/login", self.upstream.url + "/login"),
+        ]:
+            with self.subTest(location=location):
+                resp = view(factory.get(redirect_to(location)))
+
+                self.assertEqual(resp.status_code, 302)
+                self.assertEqual(resp["Location"], expected)
+
+    def test_route_under_a_prefix_keeps_the_prefix(self):
+        request = APIRequestFactory().get(
+            redirect_to("/echo/n", path="/api/my_test_route/redirect"))
+
+        resp = PassThroughProxy.as_view()(request)
+
+        self.assertEqual(resp["Location"], "/api/my_test_route/echo/n")
+
+
+class JSONModeRedirectTests(UpstreamTestCase):
+    """JSON mode keeps following redirects on the server, as 1.x did."""
+
+    class JSONMode(APIProxy):
+        pass_through = False
+        proxy_target_path = "echo"
+
+    def test_json_mode_follows_redirects(self):
+        with mock.patch.object(self.JSONMode, "target_api_url", self.upstream.url):
+            resp = self.JSONMode.as_view()(
+                APIRequestFactory().get(redirect_to("/echo/after")))
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(json.loads(resp.content)["path"], "/echo/after")
+
+    def test_json_mode_calls_requests_as_before(self):
+        with mock.patch("django_simple_api_proxy.views.requests.request") as upstream:
+            upstream.return_value.json.return_value = {}
+            self.JSONMode.as_view()(APIRequestFactory().get("/my_test_route/"))
+
+        self.assertNotIn("allow_redirects", upstream.call_args.kwargs)
+        self.assertNotIn("headers", upstream.call_args.kwargs)
 
 
 class DefaultModeTests(SimpleTestCase):
