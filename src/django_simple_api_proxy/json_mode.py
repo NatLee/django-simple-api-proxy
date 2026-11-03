@@ -155,6 +155,11 @@ class JSONMode(PassThroughView):
             return super().perform_content_negotiation(request, force)
         return super(PassThroughView, self).perform_content_negotiation(request, force)
 
+    def finalize_response(self, request: Request, response: Any, *args: Any, **kwargs: Any) -> Any:
+        if self.pass_through:
+            return super().finalize_response(request, response, *args, **kwargs)
+        return super(PassThroughView, self).finalize_response(request, response, *args, **kwargs)
+
     def _forward(self, request: Request, method: str) -> HttpResponse:
         """JSON mode: if anything fails on the way (a body that is not a JSON object,
         an API server that cannot be reached, a reply that is not JSON), the error is

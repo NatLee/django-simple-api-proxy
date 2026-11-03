@@ -381,6 +381,21 @@ class FailureTests(UpstreamTestCase):
         self.assertEqual(resp.status_code, 403)
         upstream.assert_not_called()
 
+    def test_proxy_replies_keep_their_headers_drf_replies_get_drf_headers(self):
+        class Nowhere(PassThroughProxy):
+            target_api_url = "http://127.0.0.1:9"  # the discard port; nothing listens
+
+        class LoginRequired(PassThroughProxy):
+            permission_classes = [IsAuthenticated]
+
+        gateway_error = Nowhere.as_view()(APIRequestFactory().get("/my_test_route/"))
+        refused = LoginRequired.as_view()(APIRequestFactory().get("/my_test_route/"))
+
+        self.assertEqual(gateway_error.status_code, 502)
+        self.assertFalse(gateway_error.has_header("Allow"))
+        self.assertEqual(refused.status_code, 403)
+        self.assertEqual(refused["Allow"], "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS")
+
 
 class LoggingTests(UpstreamTestCase):
 

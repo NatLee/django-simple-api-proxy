@@ -21,6 +21,7 @@ from django.http import Http404, HttpResponse, JsonResponse
 from django.utils.encoding import escape_uri_path
 from loguru import logger
 from rest_framework.request import Request
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from django_simple_api_proxy import conf
@@ -49,6 +50,18 @@ def _failure_reason(exc: Exception) -> str:
 def _content_type(response: Any) -> str | None:
     headers = getattr(response, "headers", None)
     return headers.get("Content-Type") if isinstance(headers, Mapping) else None
+
+
+class RelayedResponse(HttpResponse):
+    """The API server's reply on its way to the client.
+
+    Like Django's own redirect responses it has ``url``, the ``Location`` it points
+    to, so Django's test client can follow a relayed redirect.
+    """
+
+    @property
+    def url(self) -> str | None:
+        return self.get("Location")
 
 
 class PassThroughView(APIView):
@@ -158,8 +171,8 @@ class PassThroughView(APIView):
         body (``Content-Encoding``, ``Content-Length``). A ``Location`` header goes
         through ``rewrite_location()``.
         """
-        reply = HttpResponse(upstream.content, status=upstream.status_code,
-                             reason=upstream.reason or None)
+        reply = RelayedResponse(upstream.content, status=upstream.status_code,
+                                reason=upstream.reason or None)
         del reply["Content-Type"]  # only the API server's, if it sent one
         head = self.request.method == "HEAD"
         for name, value in response_headers_to_relay(upstream.headers, head=head).items():
@@ -167,8 +180,6 @@ class PassThroughView(APIView):
         location = reply.get("Location")
         if location:
             reply["Location"] = self.rewrite_location(self.request, location)
-            # Django's own redirects have `url`; its test client follows redirects by it.
-            reply.url = reply["Location"]  # type: ignore[attr-defined]
         for cookie in _set_cookie_headers(upstream):
             _add_cookie(reply, cookie)
         return reply
@@ -221,14 +232,19 @@ class PassThroughView(APIView):
         # REST framework can't render is not a 406.
         return super().perform_content_negotiation(request, force=True)
 
+    def finalize_response(self, request: Request, response: Any, *args: Any, **kwargs: Any) -> Any:
+        # Django REST framework would set its own Allow header on every reply and add
+        # Accept to Vary. The replies the proxy builds (the API server's, or a 502/504)
+        # keep their headers; Django REST framework's own (a 403, say) get its headers.
+        if isinstance(response, Response):
+            return super().finalize_response(request, response, *args, **kwargs)
+        return response
+
     # -- Internals ------------------------------------------------------------
 
     def _forward(self, request: Request, method: str) -> HttpResponse:
         """Send ``request`` to the API server as ``method`` and relay the reply."""
         logger.debug("Proxy {} {}", method, request.path)
-        # Django REST framework would replace the API server's Allow header and add
-        # Accept to its Vary header.
-        self.headers = {}
         url = self.get_proxy_path(request)
         query = request.META.get("QUERY_STRING", "")
         if query:
