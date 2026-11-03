@@ -27,3 +27,7 @@ def require_settings() -> None:
         f"Add to settings.py, for example:\n{lines}"
     )
 
+
+def pass_through_enabled() -> bool:
+    """``PROXY_PASS_THROUGH`` from the settings; off unless a project turns it on."""
+    return bool(getattr(settings, "PROXY_PASS_THROUGH", False))

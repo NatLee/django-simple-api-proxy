@@ -38,6 +38,11 @@ class MissingSettingTests(SimpleTestCase):
     def test_nothing_is_raised_when_everything_is_set(self):
         conf.require_settings()
 
+    def test_pass_through_setting_is_read(self):
+        self.assertIs(conf.pass_through_enabled(), False)
+        with override_settings(PROXY_PASS_THROUGH=True):
+            self.assertIs(conf.pass_through_enabled(), True)
+
 
 class SystemCheckTests(SimpleTestCase):
 
@@ -74,6 +79,14 @@ class SystemCheckTests(SimpleTestCase):
         for overrides, expected in cases:
             with self.subTest(**overrides), override_settings(**overrides):
                 self.assertEqual(self.ids(), expected)
+
+    def test_pass_through_mode_only_needs_the_scheme(self):
+        relaxed = {"TARGET_API_URL": "https://httpbin.org/", "PROXY_ROUTE_PATH": "/r/",
+                   "PROXY_TARGET_PATH": ""}
+        with override_settings(PROXY_PASS_THROUGH=True, **relaxed):
+            self.assertEqual(self.ids(), [])
+        with override_settings(PROXY_PASS_THROUGH=True, TARGET_API_URL="httpbin.org"):
+            self.assertEqual(self.ids(), ["django_simple_api_proxy.W001"])
 
     def test_hint_shows_the_fixed_value(self):
         with override_settings(PROXY_ROUTE_PATH="/my_test_route/"):
