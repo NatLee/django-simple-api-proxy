@@ -19,6 +19,11 @@ HOP_BY_HOP_HEADERS = frozenset({
 #: already answered ``Expect: 100-continue``.
 NOT_FORWARDED_REQUEST_HEADERS = frozenset({"host", "content-length", "accept-encoding", "expect"})
 
+#: The Content-Type that Django's runserver (Python's wsgiref) fills in for requests
+#: that have none. On a request without a body it came from the development server,
+#: not from the client, so it stays behind.
+RUNSERVER_DEFAULT_CONTENT_TYPE = "text/plain"
+
 #: Response headers that no longer fit once requests has read and decoded the reply,
 #: or that your web server sets itself (nginx hides ``Date`` and ``Server`` too).
 #: ``Set-Cookie`` goes through separately, one cookie at a time.
@@ -44,14 +49,14 @@ def _without(headers: Mapping[str, str], names: Iterable[str]) -> dict[str, str]
 def request_headers_to_forward(headers: Mapping[str, str], has_body: bool) -> dict[str, str]:
     """The client's headers that go on to the API server.
 
-    Without a body, ``Content-Type: text/plain`` is dropped: ``runserver`` adds it to
-    requests that have no body and no ``Content-Type``.
+    Without a body, the Content-Type runserver makes up (RUNSERVER_DEFAULT_CONTENT_TYPE)
+    stays behind.
     """
     forwarded = _without(headers, NOT_FORWARDED_REQUEST_HEADERS)
     if not has_body:
         forwarded = {
             name: value for name, value in forwarded.items()
-            if not (name.lower() == "content-type" and value == "text/plain")
+            if not (name.lower() == "content-type" and value == RUNSERVER_DEFAULT_CONTENT_TYPE)
         }
     return forwarded
 
