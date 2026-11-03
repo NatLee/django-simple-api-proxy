@@ -11,7 +11,8 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 
 from django_simple_api_proxy import conf, views
-from django_simple_api_proxy.checks import check_settings
+from django_simple_api_proxy.checks import check_json_mode_hooks, check_settings
+from django_simple_api_proxy.views import APIProxy
 
 
 class MissingSettingTests(SimpleTestCase):
@@ -113,6 +114,64 @@ class DefaultModeTests(SimpleTestCase):
             "url": "https://httpbin.org/get/items/7/?a=1",
             "allow_redirects": False,
         })
+
+
+class JSONModeHookCheckTests(SimpleTestCase):
+    """W005: overrides that stopped doing anything when pass-through became the default."""
+
+    def warned(self):
+        return {m.obj: m for m in check_json_mode_hooks() if m.id == "django_simple_api_proxy.W005"}
+
+    def test_json_mode_override_in_pass_through_mode_is_flagged(self):
+        class OldStyle(APIProxy):
+            pass_through = True
+
+            def update_payload(self, request, params):
+                return params
+
+            def response(self, resp):
+                return super().response(resp)
+
+        class Child(OldStyle):
+            pass
+
+        warned = self.warned()
+
+        self.assertIn(OldStyle, warned)
+        self.assertIn(Child, warned)  # it inherits the overrides
+        self.assertIsInstance(warned[OldStyle], checks.Warning)
+        self.assertIn("overrides update_payload(), response(), which only JSON mode calls",
+                      warned[OldStyle].msg)
+        self.assertIn("set pass_through = False on it", warned[OldStyle].hint)
+
+    def test_json_mode_subclasses_and_pass_through_hooks_are_fine(self):
+        class OptedOut(APIProxy):
+            pass_through = False
+
+            def update_payload(self, request, params):
+                return params
+
+        class Modern(APIProxy):
+            pass_through = True
+
+            def upstream_headers(self, request):
+                return {}
+
+        warned = self.warned()
+
+        self.assertNotIn(OptedOut, warned)
+        self.assertNotIn(Modern, warned)
+
+    def test_check_is_registered(self):
+        class OldStyle(APIProxy):
+            pass_through = True
+
+            def preprocess_request_body(self, request):
+                return super().preprocess_request_body(request)
+
+        flagged = [m.obj for m in checks.run_checks() if m.id == "django_simple_api_proxy.W005"]
+
+        self.assertIn(OldStyle, flagged)
 
 
 class SystemCheckTests(SimpleTestCase):

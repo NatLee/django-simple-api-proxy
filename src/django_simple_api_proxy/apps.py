@@ -8,6 +8,7 @@ class ApiProxyConfig(AppConfig):
     def ready(self) -> None:
         from django.core import checks
 
-        from django_simple_api_proxy.checks import check_settings
+        from django_simple_api_proxy.checks import check_json_mode_hooks, check_settings
 
         checks.register(check_settings)
+        checks.register(check_json_mode_hooks)

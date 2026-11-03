@@ -1,15 +1,20 @@
-"""System checks: ``manage.py check`` and ``runserver`` warn about settings that build wrong URLs.
+"""System checks: ``manage.py check`` and ``runserver`` warn about proxy setups that misbehave.
+
+W001-W004 are about settings that build wrong URLs; only the settings are checked,
+not a subclass that sets its own ``target_api_url`` and paths. W005 is about
+subclasses whose JSON-mode overrides stopped doing anything when pass-through mode
+became the default in 2.0.
 
 They are warnings, so they never stop a project from starting. Silence one with
-``SILENCED_SYSTEM_CHECKS = ["django_simple_api_proxy.W003"]``. Only the settings are
-checked; a subclass that sets its own ``target_api_url`` and paths is not.
+``SILENCED_SYSTEM_CHECKS = ["django_simple_api_proxy.W003"]``.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 
 from django.conf import settings
 from django.core import checks
+from django.core.exceptions import ImproperlyConfigured
 
 from django_simple_api_proxy.conf import pass_through_enabled
 
@@ -55,4 +60,45 @@ def check_settings(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckM
                  "where '' works.",
             id=_ID + "W004",
         ))
+    return warnings
+
+
+#: Methods only JSON mode calls; in pass-through mode an override of one does nothing.
+JSON_MODE_HOOKS = ("update_payload", "preprocess_request_body", "response")
+
+
+def _subclasses(cls: Any) -> Iterator[Any]:  # APIProxy, imported late (it needs the settings)
+    for sub in cls.__subclasses__():
+        yield sub
+        yield from _subclasses(sub)
+
+
+def check_json_mode_hooks(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckMessage]:
+    """Warn about subclasses that override JSON-mode methods but run in pass-through mode."""
+    try:
+        from django_simple_api_proxy.views import APIProxy
+    except ImproperlyConfigured:
+        return []  # a setting is missing, and Django reports that already
+    try:
+        from django.urls import get_resolver
+
+        get_resolver().url_patterns  # imports the project's URLs and the proxies they use
+    except Exception:
+        pass  # Django's own URL checks report broken URLs
+    warnings: list[checks.CheckMessage] = []
+    for cls in sorted(set(_subclasses(APIProxy)), key=lambda c: (c.__module__, c.__qualname__)):
+        overridden = [name for name in JSON_MODE_HOOKS
+                      if getattr(cls, name) is not getattr(APIProxy, name)]
+        if cls.pass_through and overridden:
+            methods = ", ".join(f"{name}()" for name in overridden)
+            warnings.append(checks.Warning(
+                f"{cls.__module__}.{cls.__qualname__} overrides {methods}, which only JSON "
+                "mode calls, but it runs in pass-through mode (the default since 2.0), so "
+                "the override does nothing.",
+                hint="To keep the 1.x behaviour, set pass_through = False on it (or "
+                     "PROXY_PASS_THROUGH = False in settings.py). To pass everything "
+                     "through, move the change to upstream_headers() or relay_response().",
+                obj=cls,
+                id=_ID + "W005",
+            ))
     return warnings
