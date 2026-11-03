@@ -1,0 +1,164 @@
+<!doctype html>
+<!--
+  README banner: what the proxy does. Render the light and dark versions (#dark picks the
+  dark theme) with a Chromium-based browser, then convert them to WebP, e.g.
+    msedge --headless=new --hide-scrollbars --force-device-scale-factor=2 --window-size=960,470
+           --default-background-color=00000000 --virtual-time-budget=5000
+           --screenshot=hero-dark.png "file:///…/hero.html#dark"
+    magick hero-dark.png -quality 85 hero-dark.webp
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Django Simple API Proxy banner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ffffff; --bg2: #f6f8fa; --ink: #1f2328; --muted: #59636e; --line: #d1d9e0; --card: #ffffff;
+    --blue: #0969da; --green: #1a7f37; --django: #0c4b33; --django-ink: #0c4b33; --amber: #9a6700;
+    --shadow: 0 1px 2px rgba(31,35,40,.06), 0 6px 18px rgba(31,35,40,.06);
+    --tint1: rgba(12,75,51,.10); --tint2: rgba(9,105,218,.08); --site: #f3faf6; --site-line: #9fd3b8;
+  }
+  .dark {
+    --bg: #0d1117; --bg2: #151b23; --ink: #f0f6fc; --muted: #9198a1; --line: #3d444d; --card: #151b23;
+    --blue: #4493f8; --green: #3fb950; --django: #44b78b; --django-ink: #7ee2b8; --amber: #d29922;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    --tint1: rgba(68,183,139,.16); --tint2: rgba(68,147,248,.12); --site: #10231b; --site-line: #2f6b52;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; }
+  body { width: 960px; height: 470px; font-family: Inter, "Segoe UI", sans-serif; color: var(--ink); }
+  .frame { position: relative; width: 960px; height: 470px; border-radius: 22px; overflow: hidden;
+           border: 1px solid var(--line);
+           background: radial-gradient(560px 300px at 50% 46%, var(--tint1), transparent 70%),
+                       radial-gradient(420px 260px at 98% 0%, var(--tint2), transparent 70%), var(--bg); }
+  .dots { position: absolute; inset: 0; opacity: .5;
+          background-image: radial-gradient(var(--line) 1px, transparent 1.2px); background-size: 22px 22px;
+          -webkit-mask-image: linear-gradient(180deg, #000 0%, transparent 75%); }
+
+  header { position: absolute; left: 40px; top: 34px; display: flex; align-items: center; gap: 18px; }
+  .mark { width: 58px; height: 58px; border-radius: 16px; background: linear-gradient(140deg, #0c4b33, #2e9e6f 60%, #44b78b);
+          display: grid; place-items: center; box-shadow: var(--shadow); }
+  h1 { margin: 0; font-size: 37px; font-weight: 800; letter-spacing: -0.035em; line-height: 1; }
+  .tag { margin: 9px 0 0; font-size: 17px; color: var(--muted); letter-spacing: -0.005em; }
+  .tag b { color: var(--ink); font-weight: 600; }
+  .pip { position: absolute; right: 40px; top: 40px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 13.5px;
+         padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow); }
+  .pip span { color: var(--muted); margin-right: 8px; }
+
+  .node { position: absolute; top: 148px; height: 142px; background: var(--card); border: 1px solid var(--line);
+          border-radius: 14px; box-shadow: var(--shadow); padding: 14px 16px; }
+  .label { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+           display: flex; align-items: center; gap: 8px; }
+  .label i { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+  .title { font-size: 19px; font-weight: 700; letter-spacing: -0.02em; margin-top: 9px; }
+  .mono { font-family: "JetBrains Mono", Consolas, monospace; font-size: 13px; margin-top: 8px; white-space: nowrap; }
+  .mono .dim { color: var(--muted); }
+  .sub { font-size: 12.5px; color: var(--muted); margin-top: 8px; line-height: 1.35; }
+  .sub code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; color: var(--ink); }
+
+  #client { left: 40px; width: 238px; }
+  #site { left: 352px; width: 256px; background: var(--site); border-color: var(--site-line); }
+  #site .label { color: var(--django-ink); }
+  #site .label i { background: var(--django); }
+  #target { left: 682px; width: 238px; }
+  #target .label i { background: var(--green); }
+
+  svg.wires { position: absolute; inset: 0; }
+  .req { fill: none; stroke: var(--blue); stroke-width: 2.2; }
+  .rep { fill: none; stroke: var(--green); stroke-width: 2.2; stroke-dasharray: 6 5; }
+  .req-head { fill: var(--blue); }
+  .rep-head { fill: var(--green); }
+  .wl { font-family: Inter, "Segoe UI", sans-serif; font-size: 11px; font-weight: 600; letter-spacing: .04em; }
+  .wl.req-t { fill: var(--blue); }
+  .wl.rep-t { fill: var(--green); }
+
+  .mode { position: absolute; top: 322px; height: 112px; width: 432px; border-radius: 14px; padding: 14px 18px;
+          border: 1px solid var(--line); background: var(--bg2); }
+  #json { left: 40px; }
+  #pass { left: 488px; border-color: var(--site-line); background: var(--site); }
+  .mode .label i { background: var(--amber); }
+  #pass .label { color: var(--django-ink); }
+  #pass .label i { background: var(--django); }
+  .mode p { margin: 9px 0 0; font-size: 13.5px; line-height: 1.5; }
+  .mode code { font-family: "JetBrains Mono", Consolas, monospace; font-size: 12.5px; }
+  .chip { margin-left: auto; font-family: "JetBrains Mono", Consolas, monospace; font-size: 11.5px; letter-spacing: 0;
+          text-transform: none; font-weight: 500; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
+          color: var(--ink); background: var(--card); }
+</style>
+</head>
+<body>
+<script>if (location.hash === '#dark') document.documentElement.className = 'dark';</script>
+<div class="frame">
+  <div class="dots"></div>
+
+  <header>
+    <div class="mark">
+      <!-- a doorway with an arrow going through it -->
+      <svg width="36" height="36" viewBox="0 0 36 36" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M11 31V12a7 7 0 0 1 14 0v19" opacity=".55"/>
+        <path d="M3 21h29"/>
+        <path d="M26 15l6 6-6 6"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Django Simple API Proxy</h1>
+      <p class="tag">One route of <b>your Django site</b> becomes the door to <b>another server</b>.</p>
+    </div>
+  </header>
+
+  <div class="pip"><span>$</span>pip install django-simple-api-proxy</div>
+
+  <svg class="wires" width="960" height="470">
+    <!-- client -> site -> target -->
+    <text class="wl req-t" x="315" y="196" text-anchor="middle">IN</text>
+    <path class="req" d="M282 206 H343"/>
+    <path class="req-head" d="M349 206 l-9 -5 v10 z"/>
+    <text class="wl req-t" x="645" y="196" text-anchor="middle">OUT</text>
+    <path class="req" d="M612 206 H673"/>
+    <path class="req-head" d="M679 206 l-9 -5 v10 z"/>
+    <!-- the reply comes back the same way -->
+    <path class="rep" d="M678 246 H617"/>
+    <path class="rep-head" d="M611 246 l9 -5 v10 z"/>
+    <text class="wl rep-t" x="645" y="270" text-anchor="middle">REPLY</text>
+    <path class="rep" d="M348 246 H287"/>
+    <path class="rep-head" d="M281 246 l9 -5 v10 z"/>
+    <text class="wl rep-t" x="315" y="270" text-anchor="middle">REPLY</text>
+  </svg>
+
+  <div class="node" id="client">
+    <div class="label"><i></i>Client</div>
+    <div class="title">Talks to your site</div>
+    <div class="mono">GET /my_test_route/items/7</div>
+    <div class="sub">a browser, your frontend, an app or <code>curl</code></div>
+  </div>
+
+  <div class="node" id="site">
+    <div class="label"><i></i>Your Django site</div>
+    <div class="title">APIProxy</div>
+    <div class="mono">/my_test_route/<span class="dim">…</span> → /get/<span class="dim">…</span></div>
+    <div class="sub">checks the login if you ask it to,<br>adds an API key if you want one</div>
+  </div>
+
+  <div class="node" id="target">
+    <div class="label"><i></i>Target site</div>
+    <div class="title">Any HTTP server</div>
+    <div class="mono">https://httpbin.org</div>
+    <div class="mono">GET /get/items/7</div>
+  </div>
+
+  <div class="mode" id="json">
+    <div class="label"><i></i>JSON mode <span class="chip">default</span></div>
+    <p>JSON in, JSON out. Adds the caller's <code>username</code>, always answers
+       HTTP 200, and <code>{"status": "error"}</code> when anything fails.</p>
+  </div>
+
+  <div class="mode" id="pass">
+    <div class="label"><i></i>Pass-through mode <span class="chip">PROXY_PASS_THROUGH = True</span></div>
+    <p>Everything goes through as it is: method, path, query, headers and any body;
+       the status code, headers and body of the reply come back the same way.</p>
+  </div>
+</div>
+</body>
+</html>

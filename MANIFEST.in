@@ -4,4 +4,4 @@ include LICENSE
 include src/django_simple_api_proxy/py.typed
 recursive-include tests test*.py
 recursive-include example *.py
-recursive-include docs *.png *.html
+recursive-include docs *.png *.webp *.html

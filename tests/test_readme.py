@@ -8,10 +8,13 @@ from unittest import mock
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 from django.urls.resolvers import RegexPattern, URLResolver
 from loguru import logger
 from rest_framework.test import APIRequestFactory, force_authenticate
+
+from django_simple_api_proxy.views import APIProxy
+from tests.upstream import Upstream, echoed
 
 ROOT = Path(__file__).resolve().parent.parent
 README = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -139,12 +142,61 @@ class LoggingBlockTests(SimpleTestCase):
         self.assertEqual(messages, [])
 
 
+class PassThroughTests(SimpleTestCase):
+    """The "Pass everything through" settings, the mapping table and `KeyedProxy`."""
+
+    def test_settings_block_turns_pass_through_on_for_the_whole_server(self):
+        namespace = run_readme_block("PROXY_PASS_THROUGH = True")
+
+        self.assertIs(namespace["PROXY_PASS_THROUGH"], True)
+        self.assertEqual(namespace["PROXY_TARGET_PATH"], "")
+
+    @mock.patch("django_simple_api_proxy.views.requests.request")
+    def test_path_table_rows(self, upstream):
+        class PassThrough(APIProxy):
+            pass_through = True
+
+        upstream.return_value = mock.Mock(status_code=200, content=b"", reason="OK",
+                                          headers={}, raw=None)
+        factory = APIRequestFactory()
+        for path, url in [
+            ("/my_test_route", "https://httpbin.org/get"),
+            ("/my_test_route/", "https://httpbin.org/get/"),
+            ("/my_test_route/items/42/?a=1", "https://httpbin.org/get/items/42/?a=1"),
+        ]:
+            with self.subTest(path=path):
+                PassThrough.as_view()(factory.get(path))
+                self.assertEqual(upstream.call_args.kwargs["url"], url)
+        self.assertIn("| `GET /my_test_route/items/42/?a=1` | "
+                      "`https://httpbin.org/get/items/42?a=1&username=%23anonymous` | "
+                      "`https://httpbin.org/get/items/42/?a=1` |", README)
+
+    def test_keyed_proxy_adds_the_key_and_keeps_cookies_home(self):
+        upstream = Upstream.start()
+        self.addCleanup(upstream.stop)
+        keyed = run_readme_block("class KeyedProxy(APIProxy)")["KeyedProxy"]
+        request = APIRequestFactory().get("/keyed/echo", HTTP_COOKIE="sessionid=abc",
+                                          HTTP_X_HELLO="world")
+
+        with mock.patch.object(keyed, "target_api_url", upstream.url),                 override_settings(UPSTREAM_API_KEY="demo-key"):
+            resp = keyed.as_view()(request)
+
+        headers = echoed(resp)[2]
+        self.assertEqual(headers["authorization"], ["Bearer demo-key"])
+        self.assertEqual(headers["x-hello"], ["world"])
+        self.assertNotIn("cookie", headers)
+
+
 class ImageTests(SimpleTestCase):
+
+    def test_hero_has_a_light_and_a_dark_version(self):
+        self.assertIn('<source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/docs/images/hero-dark.webp">', README)
+        self.assertIn('<img src="https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/docs/images/hero-light.webp"', README)
 
     def test_images_from_this_repo_exist(self):
         # Absolute URLs, so the images also show on PyPI.
         prefix = "https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/"
-        paths = re.findall(re.escape(prefix) + r"([^)\s]+)", README)
+        paths = re.findall(re.escape(prefix) + r"""([^)\s"']+)""", README)
 
         self.assertTrue(paths)
         for path in paths:
