@@ -7,7 +7,10 @@ import warnings
 from unittest import mock
 
 import requests
+from django.contrib.auth.models import User
 from django.test import RequestFactory, SimpleTestCase
+from loguru import logger
+from rest_framework.test import APIRequestFactory, force_authenticate
 
 from django_simple_api_proxy.views import APIProxy
 
@@ -91,6 +94,64 @@ class ProxyGetTests(SimpleTestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"status": "error"})
 
+    def test_upstream_request_has_a_timeout_and_checks_tls(self, upstream):
+        upstream.return_value = upstream_reply({})
+
+        self.client.get("/my_test_route/")
+
+        sent = upstream.call_args.kwargs
+        self.assertEqual(sent["timeout"], 180)
+        self.assertIs(sent["verify"], True)
+        self.assertIsNone(sent["data"])
+        self.assertIsNone(sent["json"])
+
+    def test_client_headers_are_not_forwarded(self, upstream):
+        upstream.return_value = upstream_reply({})
+
+        self.client.get("/my_test_route/", HTTP_AUTHORIZATION="Bearer secret",
+                        HTTP_COOKIE="sessionid=abc")
+
+        self.assertNotIn("headers", upstream.call_args.kwargs)
+        self.assertNotIn("cookies", upstream.call_args.kwargs)
+
+    def test_head_is_forwarded_as_get(self, upstream):
+        upstream.return_value = upstream_reply({"from": "upstream"})
+
+        resp = self.client.head("/my_test_route/")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(upstream.call_args.kwargs["method"], "GET")
+
+    def test_stock_view_sends_anonymous_even_for_logged_in_users(self, upstream):
+        # The stock view has no authentication classes, so Django REST framework
+        # never looks at the user Django's AuthenticationMiddleware found.
+        upstream.return_value = upstream_reply({})
+        request = RequestFactory().get("/my_test_route/")
+        request.user = User(username="alice")
+
+        APIProxy.as_view()(request, resource="")
+
+        self.assertEqual(upstream.call_args.kwargs["params"], {"username": "#anonymous"})
+
+
+@mock.patch("django_simple_api_proxy.views.requests.request")
+class OtherMethodTests(SimpleTestCase):
+
+    def test_options_is_answered_without_calling_upstream(self, upstream):
+        resp = self.client.options("/my_test_route/")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Allow"], "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS")
+        # Django REST framework shows the class docstring here.
+        self.assertEqual(resp.json()["description"], "API proxy")
+        upstream.assert_not_called()
+
+    def test_other_methods_are_not_allowed(self, upstream):
+        resp = self.client.generic("TRACE", "/my_test_route/")
+
+        self.assertEqual(resp.status_code, 405)
+        upstream.assert_not_called()
+
 
 @mock.patch("django_simple_api_proxy.views.requests.request")
 class ProxyBodyMethodTests(SimpleTestCase):
@@ -137,6 +198,130 @@ class ProxyBodyMethodTests(SimpleTestCase):
 
         self.assertEqual(resp.json(), {"status": "error"})
         upstream.assert_not_called()
+
+    def test_json_body_that_is_not_an_object_returns_error_status(self, upstream):
+        resp = self.send("POST", "/my_test_route/", [1, 2])
+
+        self.assertEqual(resp.json(), {"status": "error"})
+        upstream.assert_not_called()
+
+    def test_logged_in_user_name_is_sent_in_json_body(self, upstream):
+        upstream.return_value = upstream_reply({})
+        request = APIRequestFactory().post("/my_test_route/", {"q": 1}, format="json")
+        force_authenticate(request, user=User(username="alice"))
+
+        APIProxy.as_view()(request, resource="")
+
+        self.assertEqual(upstream.call_args.kwargs["json"], {"q": 1, "username": "alice"})
+
+
+@mock.patch("django_simple_api_proxy.views.requests.request")
+class SubclassTests(SimpleTestCase):
+    """What the README says a subclass can change."""
+
+    def test_overridden_hooks_are_used_for_every_method(self, upstream):
+        class Customised(APIProxy):
+            def update_payload(self, request, params):
+                params = super().update_payload(request, params)
+                params["extra"] = "yes"
+                return params
+
+            def response(self, resp):
+                return super().response({"wrapped": resp})
+
+        factory = APIRequestFactory()
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE"]:
+            with self.subTest(method=method):
+                upstream.reset_mock()
+                upstream.return_value = upstream_reply({"method": method})
+                build = getattr(factory, method.lower())
+                if method == "GET":
+                    request = build("/my_test_route/")
+                else:
+                    request = build("/my_test_route/", {}, format="json")
+
+                resp = Customised.as_view()(request, resource="")
+
+                self.assertEqual(json.loads(resp.content), {"wrapped": {"method": method}})
+                sent = upstream.call_args.kwargs
+                forwarded = sent["params"] if method == "GET" else sent["json"]
+                self.assertEqual(forwarded, {"username": "#anonymous", "extra": "yes"})
+
+    def test_class_attributes_point_a_subclass_at_another_api(self, upstream):
+        class OtherAPI(APIProxy):
+            target_api_url = "https://api.example.com"
+            proxy_route_path = "other"
+            proxy_target_path = "v1"
+
+        upstream.return_value = upstream_reply({})
+        request = APIRequestFactory().get("/other/items/7")
+
+        OtherAPI.as_view()(request, resource="/items/7")
+
+        self.assertEqual(upstream.call_args.kwargs["url"], "https://api.example.com/v1/items/7")
+
+
+@mock.patch("django_simple_api_proxy.views.requests.request")
+class LoggingTests(SimpleTestCase):
+
+    def capture(self, level):
+        messages = []
+        sink = logger.add(messages.append, level=level, format="{message}")
+        self.addCleanup(logger.remove, sink)
+        return messages
+
+    def test_failures_are_logged_as_errors_with_the_traceback(self, upstream):
+        upstream.side_effect = requests.ConnectionError("no route to host")
+        errors = self.capture("ERROR")
+
+        self.client.get("/my_test_route/")
+
+        self.assertEqual(len(errors), 1)
+        record = errors[0].record
+        self.assertEqual(record["level"].name, "ERROR")
+        self.assertIs(record["exception"].type, requests.ConnectionError)
+
+    def test_debug_log_can_be_turned_off(self, upstream):
+        upstream.return_value = upstream_reply({})
+        messages = self.capture("DEBUG")
+
+        self.client.get("/my_test_route/")
+        self.assertTrue(messages)
+        self.assertTrue(all(m.record["name"].startswith("django_simple_api_proxy")
+                            for m in messages))
+
+        messages.clear()
+        logger.disable("django_simple_api_proxy")
+        self.addCleanup(logger.enable, "django_simple_api_proxy")
+        self.client.get("/my_test_route/")
+        self.assertEqual(messages, [])
+
+
+@mock.patch("django_simple_api_proxy.views.requests.request")
+class OpenDecisionTests(SimpleTestCase):
+    """Current behaviour the owner has not decided to change yet.
+
+    The README lists these under "Known limitations". If one is changed on purpose,
+    change its test with it. (The third one, query strings dropped for POST, PUT,
+    PATCH and DELETE, is `ProxyBodyMethodTests.test_query_string_is_not_forwarded`.)
+    """
+
+    def test_upstream_status_code_is_not_passed_on(self, upstream):
+        upstream.return_value = upstream_reply({"detail": "Not found"})
+        upstream.return_value.status_code = 404
+
+        resp = self.client.get("/my_test_route/missing")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"detail": "Not found"})
+
+    def test_route_path_with_trailing_slash_builds_wrong_url(self, upstream):
+        class TrailingSlash(APIProxy):
+            proxy_route_path = "my_test_route/"
+
+        request = RequestFactory().get("/my_test_route/abc")
+
+        self.assertEqual(TrailingSlash().get_proxy_path(request), UPSTREAM + "/getabc")
 
 
 class ParsePathTests(SimpleTestCase):
