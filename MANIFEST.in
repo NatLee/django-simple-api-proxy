@@ -3,3 +3,4 @@ include *.md
 include LICENSE
 recursive-include tests test*.py
 recursive-include example *.py
+recursive-include docs *.png *.html
