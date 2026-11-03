@@ -11,32 +11,49 @@ on:
       - master
 
 jobs:
+  matrix:
+    # The Python/Django combinations come from the envlist in tox.ini, so CI and
+    # `tox` locally always test the same ones. An env like py312-django42 means
+    # Python 3.12 with Django 4.2.
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.envs.outputs.include }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tox
+        run: pip install tox
+      - name: Read the combinations from tox.ini
+        id: envs
+        run: |
+          tox -l > envs.txt
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json
+          import re
+
+          include = []
+          for env in open("envs.txt").read().split():
+              match = re.fullmatch(r"py(\d)(\d+)-django(\d)(\d+)", env)
+              if match is None:
+                  raise SystemExit(f"tox env {env!r} is not named py<version>-django<version>")
+              python = f"{match[1]}.{match[2]}"
+              django = f"{match[3]}.{match[4]}"
+              include.append({"env": env, "python": python, "django": django})
+          if not include:
+              raise SystemExit("tox.ini lists no environments")
+          print("include=" + json.dumps(include))
+          EOF
+
   test:
+    needs: matrix
     name: test (Python ${{ matrix.python }}, Django ${{ matrix.django }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # Each Django release on the oldest and the newest Python it supports
-        # (the package allows Python >= 3.8 and Django >= 4.0). Same list as tox.ini.
-        include:
-          - { python: "3.8", django: "4.0" }
-          - { python: "3.10", django: "4.0" }
-          - { python: "3.8", django: "4.1" }
-          - { python: "3.11", django: "4.1" }
-          - { python: "3.8", django: "4.2" }
-          - { python: "3.9", django: "4.2" }
-          - { python: "3.12", django: "4.2" }
-          - { python: "3.10", django: "5.0" }
-          - { python: "3.12", django: "5.0" }
-          - { python: "3.10", django: "5.1" }
-          - { python: "3.13", django: "5.1" }
-          - { python: "3.10", django: "5.2" }
-          - { python: "3.14", django: "5.2" }
-          - { python: "3.12", django: "6.0" }
-          - { python: "3.14", django: "6.0" }
-          - { python: "3.12", django: "6.1" }
-          - { python: "3.14", django: "6.1" }
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +64,7 @@ jobs:
       - name: Install tox
         run: pip install tox
       - name: Run tests
-        # `py` = the Python on PATH; e.g. Django 4.2 -> tox env `py-django42`
-        run: tox -e "py-django$(echo '${{ matrix.django }}' | tr -d .)"
+        run: tox -e "${{ matrix.env }}"
 
   package:
     # Build the sdist and wheel the same way the release workflow does, and validate the metadata.
