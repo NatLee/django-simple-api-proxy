@@ -22,6 +22,13 @@ from rest_framework.views import APIView
 ANONYMOUS_USERNAME = "#anonymous"
 
 
+def _field_names(body: Any) -> str:
+    """Describe a decoded JSON body for the log without any of its values."""
+    if isinstance(body, dict):
+        return str(list(body))
+    return "(not a JSON object)"
+
+
 class APIProxy(APIView):
     """API proxy"""
     # Django REST framework shows the docstring above in OPTIONS responses and on
@@ -95,7 +102,8 @@ class APIProxy(APIView):
         An empty body counts as ``{}``; ``username`` is added by ``update_payload``.
         """
         params = json.loads(request.body) if request.body else {}
-        logger.debug("JSON body: {}", params)
+        # Field names only: the values may be passwords or tokens.
+        logger.debug("JSON body fields: {}", _field_names(params))
         path = self.get_proxy_path(request)
         params = self.update_payload(request, params)
         return path, params

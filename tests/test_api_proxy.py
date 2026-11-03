@@ -292,10 +292,53 @@ class LoggingTests(SimpleTestCase):
 
         self.assertEqual([m.record["message"] for m in messages], [
             "Proxy POST /my_test_route/things",
-            "JSON body: {'a': 1}",
+            "JSON body fields: ['a']",
             "Upstream URL: https://httpbin.org/get/things",
             "Username: #anonymous",
         ])
+
+    def test_body_values_never_reach_the_log(self, upstream):
+        upstream.return_value = upstream_reply({})
+        messages = self.capture("DEBUG")
+        body = {"password": "hunter2", "profile": {"token": "s3cret-token"}}
+
+        for method in ["POST", "PUT", "PATCH", "DELETE"]:
+            self.client.generic(method, "/my_test_route/", json.dumps(body),
+                                content_type="application/json")
+
+        log = "\n".join(messages)
+        self.assertEqual(log.count("JSON body fields: ['password', 'profile']"), 4)
+        self.assertNotIn("hunter2", log)
+        self.assertNotIn("s3cret-token", log)
+
+    def test_body_that_is_not_an_object_is_not_logged(self, upstream):
+        messages = self.capture("DEBUG")
+
+        self.client.post("/my_test_route/", data='["hunter2"]', content_type="application/json")
+
+        # The proxy's own lines only: this request fails, and the traceback
+        # is up to the handler (see the diagnose test below).
+        lines = [m.record["message"] for m in messages]
+        self.assertIn("JSON body fields: (not a JSON object)", lines)
+        self.assertNotIn("hunter2", "\n".join(lines))
+
+    def test_failed_request_log_has_no_body_values_without_diagnose(self, upstream):
+        # loguru's default handler prints variable values in tracebacks
+        # (diagnose=True); the README tells users to turn that off.
+        upstream.side_effect = requests.ConnectionError("no route to host")
+        output = []
+        sink = logger.add(output.append, level="DEBUG", diagnose=False, backtrace=False,
+                          format="{level} {message}\n{exception}")
+        self.addCleanup(logger.remove, sink)
+
+        self.client.post("/my_test_route/", data='{"password": "hunter2"}',
+                         content_type="application/json")
+
+        log = "".join(output)
+        self.assertIn("ERROR Could not proxy POST /my_test_route/", log)
+        self.assertIn("Traceback", log)
+        self.assertIn("ConnectionError: no route to host", log)
+        self.assertNotIn("hunter2", log)
 
     def test_debug_log_can_be_turned_off(self, upstream):
         upstream.return_value = upstream_reply({})
