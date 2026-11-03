@@ -1,14 +1,22 @@
 """The code blocks in README.md work as written."""
 import re
+import sys
+import textwrap
+import types
 from pathlib import Path
 from unittest import mock
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase
+from django.urls.resolvers import RegexPattern, URLResolver
+from loguru import logger
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
-PY_BLOCKS = re.findall(r"```py\n(.*?)```", README, re.S)
+ROOT = Path(__file__).resolve().parent.parent
+README = (ROOT / "README.md").read_text(encoding="utf-8")
+# Blocks inside the quick start list are indented; dedent them before running.
+PY_BLOCKS = [textwrap.dedent(block) for block in re.findall(r"```py\n(.*?)```", README, re.S)]
 
 
 def readme_block(marker):
@@ -29,24 +37,34 @@ class QuickStartTests(SimpleTestCase):
         self.assertIn("'rest_framework'", block)
         self.assertIn("'django_simple_api_proxy'", block)
 
+    def test_settings_block_is_what_the_tests_use(self):
+        namespace = run_readme_block("TARGET_API_URL")
+
+        for name in ["TARGET_API_URL", "PROXY_ROUTE_PATH", "PROXY_TARGET_PATH"]:
+            self.assertEqual(namespace[name], getattr(settings, name))
+
     def test_urls_block_runs_on_its_own(self):
         namespace = run_readme_block("include('django_simple_api_proxy.urls')", urlpatterns=[])
 
         self.assertEqual([str(p.pattern) for p in namespace["urlpatterns"]], ["my_test_route"])
 
 
+def readme_proxy_class():
+    return run_readme_block("class MyAPIProxy(APIProxy)")["MyAPIProxy"]
+
+
 @mock.patch("django_simple_api_proxy.views.requests.request")
 class UsageExampleTests(SimpleTestCase):
-    """The custom `MyAPIProxy` from the "Usage" section."""
+    """The custom `MyAPIProxy` from the "Customising" section."""
 
     def setUp(self):
-        self.view = run_readme_block("class MyAPIProxy(APIProxy)")["MyAPIProxy"].as_view()
+        self.view = readme_proxy_class().as_view()
         self.factory = APIRequestFactory()
 
     def test_logged_in_user_is_proxied(self, upstream):
         upstream.return_value = mock.Mock(**{"json.return_value": {"from": "upstream"}})
         request = self.factory.get("/my_test_route/?q=1")
-        force_authenticate(request, user=User(username="alice"))
+        force_authenticate(request, user=User(username="alice", email="alice@example.com"))
 
         resp = self.view(request, resource="/")
 
@@ -54,7 +72,8 @@ class UsageExampleTests(SimpleTestCase):
         self.assertEqual(resp.content, b'{"from": "upstream"}')
         sent = upstream.call_args.kwargs
         self.assertEqual(sent["url"], "https://httpbin.org/get")
-        self.assertEqual(sent["params"], {"q": ["1"], "username": "alice"})
+        self.assertEqual(sent["params"],
+                         {"q": ["1"], "username": "alice", "email": "alice@example.com"})
 
     def test_anonymous_user_gets_403(self, upstream):
         request = self.factory.get("/my_test_route/", HTTP_ACCEPT="application/json")
@@ -66,7 +85,7 @@ class UsageExampleTests(SimpleTestCase):
         upstream.assert_not_called()
 
     def test_anonymous_browser_gets_403_page_not_500(self, upstream):
-        # Needs 'rest_framework' in INSTALLED_APPS, as the quick start now says.
+        # Needs 'rest_framework' in INSTALLED_APPS, as the quick start says.
         request = self.factory.get("/my_test_route/", HTTP_ACCEPT="text/html")
 
         resp = self.view(request, resource="/")
@@ -74,3 +93,60 @@ class UsageExampleTests(SimpleTestCase):
 
         self.assertEqual(resp.status_code, 403)
         self.assertIn(b"Authentication credentials were not provided.", resp.content)
+
+
+class CustomRoutingTests(SimpleTestCase):
+    """The `urls.py` block that routes `PROXY_ROUTE_PATH` to `MyAPIProxy`."""
+
+    def test_route_and_paths_below_it_reach_the_subclass(self):
+        proxy_class = readme_proxy_class()
+        package = types.ModuleType("readme_project")
+        package.__path__ = []
+        views = types.ModuleType("readme_project.views")
+        views.MyAPIProxy = proxy_class
+        modules = {"readme_project": package, "readme_project.views": views}
+
+        with mock.patch.dict(sys.modules, modules):
+            namespace = run_readme_block(
+                "MyAPIProxy.as_view()", __name__="readme_project.urls",
+                __package__="readme_project", urlpatterns=[],
+            )
+
+        resolver = URLResolver(RegexPattern(r"^/"), namespace["urlpatterns"])
+        for path, resource in [("/my_test_route", ""), ("/my_test_route/items/7", "/items/7")]:
+            with self.subTest(path=path):
+                match = resolver.resolve(path)
+                self.assertIs(match.func.view_class, proxy_class)
+                self.assertEqual(match.kwargs, {"resource": resource})
+
+
+@mock.patch("django_simple_api_proxy.views.requests.request")
+class LoggingBlockTests(SimpleTestCase):
+
+    def test_logging_block_turns_the_proxy_log_off(self, upstream):
+        def restore():
+            logger.enable("django_simple_api_proxy")
+            logger.remove()
+            logger.add(sys.stderr)  # loguru's default handler
+        self.addCleanup(restore)
+        upstream.return_value = mock.Mock(**{"json.return_value": {}})
+
+        run_readme_block('logger.disable("django_simple_api_proxy")')
+        messages = []
+        logger.add(messages.append, level="DEBUG")
+        self.client.get("/my_test_route/")
+
+        self.assertEqual(messages, [])
+
+
+class ImageTests(SimpleTestCase):
+
+    def test_images_from_this_repo_exist(self):
+        # Absolute URLs, so the images also show on PyPI.
+        prefix = "https://raw.githubusercontent.com/NatLee/django-simple-api-proxy/main/"
+        paths = re.findall(re.escape(prefix) + r"([^)\s]+)", README)
+
+        self.assertTrue(paths)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertTrue((ROOT / path).is_file())
