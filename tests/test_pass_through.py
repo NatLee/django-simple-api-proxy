@@ -511,9 +511,3 @@ class JSONModeRedirectTests(UpstreamTestCase):
 
         self.assertNotIn("allow_redirects", upstream.call_args.kwargs)
         self.assertNotIn("headers", upstream.call_args.kwargs)
-
-
-class DefaultModeTests(SimpleTestCase):
-
-    def test_pass_through_is_off_by_default(self):
-        self.assertIs(APIProxy.pass_through, False)

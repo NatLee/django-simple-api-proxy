@@ -51,7 +51,8 @@ def check_settings(app_configs: Any = None, **kwargs: Any) -> list[checks.CheckM
             "PROXY_TARGET_PATH is empty or starts or ends with '/', so the proxy "
             "builds URLs with '//' or without the slash between path parts.",
             hint="Write it without slashes, e.g. PROXY_TARGET_PATH = 'get'. To proxy "
-                 "the whole API server, turn on PROXY_PASS_THROUGH, where '' works.",
+                 "the whole API server, use pass-through mode (the default since 2.0), "
+                 "where '' works.",
             id=_ID + "W004",
         ))
     return warnings

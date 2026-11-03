@@ -4,11 +4,12 @@
 ``<TARGET_API_URL>/<PROXY_TARGET_PATH>/<rest>`` and answers with what that server
 returns. It has two modes:
 
-* JSON mode, the default: JSON in, JSON out. It adds ``username`` to what it sends
-  and always answers with HTTP 200.
-* Pass-through mode (``PROXY_PASS_THROUGH = True`` or ``pass_through = True`` on a
-  subclass): the method, path, query string, headers and body go through as they
-  are, and the status code, headers and body of the reply come back as they are.
+* Pass-through mode, the default since 2.0: the method, path, query string,
+  headers and body go through as they are, and the status code, headers and body
+  of the reply come back as they are. Redirects go back to the client.
+* JSON mode, the behaviour of 1.x (``PROXY_PASS_THROUGH = False`` or
+  ``pass_through = False`` on a subclass): JSON in, JSON out. It adds
+  ``username`` to what it sends and always answers with HTTP 200.
 
 Subclass it to require a login or to change what is sent.
 """
@@ -88,7 +89,8 @@ class APIProxy(APIView):
     target_api_url: str = settings.TARGET_API_URL
     proxy_route_path: str = settings.PROXY_ROUTE_PATH
     proxy_target_path: str = settings.PROXY_TARGET_PATH
-    #: Pass everything through instead of JSON in, JSON out. See the module docstring.
+    #: Pass everything through (the default since 2.0); False brings back the JSON
+    #: mode of 1.x. See the module docstring.
     pass_through: bool = conf.pass_through_enabled()
 
     # -- HTTP methods ---------------------------------------------------------
