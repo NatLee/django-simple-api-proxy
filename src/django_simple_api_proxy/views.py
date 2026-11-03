@@ -18,6 +18,10 @@ from loguru import logger
 from rest_framework.request import Request
 from rest_framework.views import APIView
 
+from django_simple_api_proxy import conf
+
+conf.require_settings()
+
 #: Sent as ``username`` when the request has no authenticated user.
 ANONYMOUS_USERNAME = "#anonymous"
 
