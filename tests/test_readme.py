@@ -56,12 +56,16 @@ def readme_proxy_class():
     return run_readme_block("class MyAPIProxy(APIProxy)")["MyAPIProxy"]
 
 
+def readme_json_proxy_class():
+    return run_readme_block("class MyJSONProxy(APIProxy)")["MyJSONProxy"]
+
+
 @mock.patch("django_simple_api_proxy.views.requests.request")
 class UsageExampleTests(SimpleTestCase):
-    """The custom `MyAPIProxy` from the "Customising" section."""
+    """The JSON-mode `MyJSONProxy` from the "JSON mode" section (`MyAPIProxy` in 1.x)."""
 
     def setUp(self):
-        self.view = readme_proxy_class().as_view()
+        self.view = readme_json_proxy_class().as_view()
         self.factory = APIRequestFactory()
 
     def test_logged_in_user_is_proxied(self, upstream):
@@ -142,14 +146,26 @@ class LoggingBlockTests(SimpleTestCase):
         self.assertEqual(messages, [])
 
 
+class UpgradeTests(SimpleTestCase):
+    """The "Upgrading to 2.0" section."""
+
+    def test_one_line_brings_back_json_mode(self):
+        namespace = run_readme_block("PROXY_PASS_THROUGH = False")
+
+        self.assertIs(namespace["PROXY_PASS_THROUGH"], False)
+
+    def test_readme_classes_raise_no_upgrade_warning(self):
+        from django_simple_api_proxy.checks import check_json_mode_hooks
+
+        classes = [readme_proxy_class(), readme_json_proxy_class()]
+
+        flagged = [m.obj for m in check_json_mode_hooks()]
+        for cls in classes:
+            self.assertNotIn(cls, flagged)
+
+
 class PassThroughTests(SimpleTestCase):
-    """The "Pass everything through" settings, the mapping table and `KeyedProxy`."""
-
-    def test_settings_block_turns_pass_through_on_for_the_whole_server(self):
-        namespace = run_readme_block("PROXY_PASS_THROUGH = True")
-
-        self.assertIs(namespace["PROXY_PASS_THROUGH"], True)
-        self.assertEqual(namespace["PROXY_TARGET_PATH"], "")
+    """The mapping table and the pass-through `MyAPIProxy` from "Customising"."""
 
     @mock.patch("django_simple_api_proxy.views.requests.request")
     def test_path_table_rows(self, upstream):
@@ -168,23 +184,44 @@ class PassThroughTests(SimpleTestCase):
                 PassThrough.as_view()(factory.get(path))
                 self.assertEqual(upstream.call_args.kwargs["url"], url)
         self.assertIn("| `GET /my_test_route/items/42/?a=1` | "
-                      "`https://httpbin.org/get/items/42?a=1&username=%23anonymous` | "
-                      "`https://httpbin.org/get/items/42/?a=1` |", README)
+                      "`https://httpbin.org/get/items/42/?a=1` | "
+                      "`https://httpbin.org/get/items/42?a=1&username=%23anonymous` |", README)
 
-    def test_keyed_proxy_adds_the_key_and_keeps_cookies_home(self):
+    def proxy_to_local_upstream(self):
         upstream = Upstream.start()
         self.addCleanup(upstream.stop)
-        keyed = run_readme_block("class KeyedProxy(APIProxy)")["KeyedProxy"]
-        request = APIRequestFactory().get("/keyed/echo", HTTP_COOKIE="sessionid=abc",
-                                          HTTP_X_HELLO="world")
+        proxy = readme_proxy_class()
+        # The test settings pin JSON mode; the README's class relies on the 2.0 default.
+        for name, value in [("target_api_url", upstream.url), ("pass_through", True)]:
+            patcher = mock.patch.object(proxy, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return proxy
 
-        with mock.patch.object(keyed, "target_api_url", upstream.url),                 override_settings(UPSTREAM_API_KEY="demo-key"):
-            resp = keyed.as_view()(request)
+    def test_my_api_proxy_keeps_your_credentials_and_adds_the_key(self):
+        proxy = self.proxy_to_local_upstream()
+        request = APIRequestFactory().get("/my_test_route/headers", HTTP_COOKIE="sessionid=abc",
+                                          HTTP_AUTHORIZATION="Bearer site-jwt", HTTP_X_HELLO="world")
+        force_authenticate(request, user=User(username="alice"))
+
+        with override_settings(UPSTREAM_API_KEY="demo-key"):
+            resp = proxy.as_view()(request)
 
         headers = echoed(resp)[2]
-        self.assertEqual(headers["authorization"], ["Bearer demo-key"])
+        self.assertEqual(headers["x-api-key"], ["demo-key"])
+        self.assertEqual(headers["x-user"], ["alice"])
         self.assertEqual(headers["x-hello"], ["world"])
         self.assertNotIn("cookie", headers)
+        self.assertNotIn("authorization", headers)
+
+    def test_my_api_proxy_refuses_anonymous_requests(self):
+        proxy = self.proxy_to_local_upstream()
+
+        with mock.patch("django_simple_api_proxy.views.requests.request") as upstream:
+            resp = proxy.as_view()(APIRequestFactory().get("/my_test_route/headers"))
+
+        self.assertEqual(resp.status_code, 403)
+        upstream.assert_not_called()
 
 
 class ImageTests(SimpleTestCase):
