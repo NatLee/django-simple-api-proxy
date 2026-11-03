@@ -73,9 +73,9 @@ class APIProxy(APIView):
 
     def get_proxy_path(self, request: Request) -> str:
         """Return the API server URL for ``request``, without the query string."""
-        path = self.parse_path(request)
-        logger.debug(f"URL: {path}")
-        return f"{self.target_api_url}{path}"
+        url = f"{self.target_api_url}{self.parse_path(request)}"
+        logger.debug("Upstream URL: {}", url)
+        return url
 
     def update_payload(self, request: Request, params: dict[str, Any]) -> dict[str, Any]:
         """Set ``username`` in ``params`` and return ``params``.
@@ -85,7 +85,7 @@ class APIProxy(APIView):
         """
         # A custom user model without `username` ends in {"status": "error"}.
         username = request.user.username or ANONYMOUS_USERNAME  # type: ignore[union-attr]
-        logger.debug(f"Username: {username}")
+        logger.debug("Username: {}", username)
         params.update({"username": username})
         return params
 
@@ -95,7 +95,7 @@ class APIProxy(APIView):
         An empty body counts as ``{}``; ``username`` is added by ``update_payload``.
         """
         params = json.loads(request.body) if request.body else {}
-        logger.debug(f"JSON Params: {params}")
+        logger.debug("JSON body: {}", params)
         path = self.get_proxy_path(request)
         params = self.update_payload(request, params)
         return path, params
@@ -136,10 +136,13 @@ class APIProxy(APIView):
         server that cannot be reached, a reply that is not JSON), the error is
         logged and the client gets ``{"status": "error"}`` with HTTP status 200.
         """
-        logger.debug(f"----- Proxy {method}")
-        reply: Any = {"status": "error"}
-        with logger.catch():
+        logger.debug("Proxy {} {}", method, request.path)
+        try:
             reply = self._send_upstream(request, method).json()
+        except Exception:  # Whatever went wrong, the client gets the same answer.
+            logger.exception('Could not proxy {} {}, replying {{"status": "error"}}',
+                             method, request.path)
+            reply = {"status": "error"}
         return self.response(reply)
 
     def _send_upstream(self, request: Request, method: str) -> requests.Response:

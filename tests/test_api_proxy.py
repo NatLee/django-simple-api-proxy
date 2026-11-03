@@ -280,6 +280,22 @@ class LoggingTests(SimpleTestCase):
         record = errors[0].record
         self.assertEqual(record["level"].name, "ERROR")
         self.assertIs(record["exception"].type, requests.ConnectionError)
+        self.assertEqual(record["message"],
+                         'Could not proxy GET /my_test_route/, replying {"status": "error"}')
+
+    def test_debug_log_says_what_was_forwarded_where(self, upstream):
+        upstream.return_value = upstream_reply({})
+        messages = self.capture("DEBUG")
+
+        self.client.post("/my_test_route/things", data='{"a": 1}',
+                         content_type="application/json")
+
+        self.assertEqual([m.record["message"] for m in messages], [
+            "Proxy POST /my_test_route/things",
+            "JSON body: {'a': 1}",
+            "Upstream URL: https://httpbin.org/get/things",
+            "Username: #anonymous",
+        ])
 
     def test_debug_log_can_be_turned_off(self, upstream):
         upstream.return_value = upstream_reply({})
