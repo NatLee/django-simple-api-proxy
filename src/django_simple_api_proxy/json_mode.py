@@ -30,6 +30,7 @@ from rest_framework.request import Request
 from django_simple_api_proxy import conf
 from django_simple_api_proxy.pass_through import (
     ERROR_REPLY,
+    ERROR_REPLY_TEXT,
     PassThroughView,
     _content_type,
     _failure_reason,
@@ -172,8 +173,8 @@ class JSONMode(PassThroughView):
             reply = self._json_from(self._send_upstream(request, method))
         except Exception as exc:  # Whatever went wrong, the client gets the same answer.
             reason = str(exc) if isinstance(exc, ProxyError) else _failure_reason(exc)
-            logger.exception('Could not proxy {} {}: {}. Replying {{"status": "error"}}',
-                             method, request.path, reason)
+            logger.exception("Could not proxy {} {}: {}. Replying {}",
+                             method, request.path, reason, ERROR_REPLY_TEXT)
             reply = ERROR_REPLY.copy()
         return self.response(reply)
 
@@ -190,13 +191,12 @@ class JSONMode(PassThroughView):
         return self.send_request(method, url, json=body)
 
     @staticmethod
-    def _json_from(upstream: Any) -> Any:
+    def _json_from(upstream: requests.Response) -> Any:
         try:
             return upstream.json()
         except ValueError as exc:
-            status = getattr(upstream, "status_code", "?")
-            kind = _content_type(upstream) or "no Content-Type"
             raise ProxyError(
-                f"the API server answered HTTP {status} ({kind}), which is not JSON; "
+                f"the API server answered HTTP {upstream.status_code} "
+                f"({_content_type(upstream)}), which is not JSON; "
                 "set PROXY_PASS_THROUGH = True to pass any reply on"
             ) from exc

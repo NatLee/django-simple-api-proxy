@@ -10,7 +10,9 @@ this view with the JSON mode (json_mode.py) layered on top.
 """
 from __future__ import annotations
 
+import json
 import re
+from http import HTTPStatus
 from http.cookies import SimpleCookie
 from typing import Any, Mapping
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -32,8 +34,18 @@ from django_simple_api_proxy.headers import (
 
 conf.require_settings()
 
-#: What the client gets when a request cannot be proxied (both modes).
+#: What the client gets when a request cannot be proxied (both modes), and how the
+#: log quotes it.
 ERROR_REPLY = {"status": "error"}
+ERROR_REPLY_TEXT = json.dumps(ERROR_REPLY)
+
+#: Seconds the API server has to answer (requests' timeout); 1.x used the same.
+DEFAULT_TIMEOUT = 180
+
+#: What pass-through mode answers when the API server gives no answer: it did not
+#: answer in time, or it could not be reached at all.
+NO_ANSWER_IN_TIME = HTTPStatus.GATEWAY_TIMEOUT
+NO_ANSWER = HTTPStatus.BAD_GATEWAY
 
 
 def _failure_reason(exc: Exception) -> str:
@@ -47,9 +59,8 @@ def _failure_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-def _content_type(response: Any) -> str | None:
-    headers = getattr(response, "headers", None)
-    return headers.get("Content-Type") if isinstance(headers, Mapping) else None
+def _content_type(response: requests.Response) -> str:
+    return response.headers.get("Content-Type") or "no Content-Type"
 
 
 class RelayedResponse(HttpResponse):
@@ -141,7 +152,7 @@ class PassThroughView(APIView):
         params: dict[str, Any] | None = None,
         data: Any = None,
         json: Any = None,
-        timeout: float | tuple[float, float] = 180,
+        timeout: float | tuple[float, float] = DEFAULT_TIMEOUT,
         verify: bool | str = True,
         headers: Mapping[str, str] | None = None,
         allow_redirects: bool | None = None,
@@ -257,12 +268,12 @@ class PassThroughView(APIView):
             upstream = self.send_request(method, url, data=body or None, headers=headers,
                                          allow_redirects=False)
         except requests.RequestException as exc:
-            status = 504 if isinstance(exc, requests.Timeout) else 502
-            logger.exception('Could not proxy {} {}: {}. Replying {} {{"status": "error"}}',
-                             method, request.path, _failure_reason(exc), status)
+            status = NO_ANSWER_IN_TIME if isinstance(exc, requests.Timeout) else NO_ANSWER
+            logger.exception("Could not proxy {} {}: {}. Replying {} {}", method, request.path,
+                             _failure_reason(exc), int(status), ERROR_REPLY_TEXT)
             return JsonResponse(ERROR_REPLY, status=status)
         logger.debug("API server answered {} ({}, {} bytes)", upstream.status_code,
-                     _content_type(upstream) or "no Content-Type", len(upstream.content))
+                     _content_type(upstream), len(upstream.content))
         return self.relay_response(upstream)
 
     def _split_route(self, request: Request) -> tuple[str, str]:
