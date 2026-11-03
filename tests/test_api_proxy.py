@@ -3,10 +3,11 @@
 The upstream API is replaced by a fake `requests.request`, so no network is needed.
 """
 import json
+import warnings
 from unittest import mock
 
 import requests
-from django.test import SimpleTestCase
+from django.test import RequestFactory, SimpleTestCase
 
 from django_simple_api_proxy.views import APIProxy
 
@@ -127,6 +128,18 @@ class ProxyBodyMethodTests(SimpleTestCase):
 
         self.assertEqual(resp.json(), {"status": "error"})
         upstream.assert_not_called()
+
+
+class ParsePathTests(SimpleTestCase):
+
+    def test_no_deprecation_warning_on_python_3_13_and_later(self):
+        # Python 3.13 deprecated passing re.sub()'s count positionally; the proxy
+        # did that on every request.
+        request = RequestFactory().get("/my_test_route/abc")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(APIProxy().parse_path(request), "/get/abc")
 
 
 class UpdatePayloadTests(SimpleTestCase):
