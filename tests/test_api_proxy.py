@@ -122,6 +122,15 @@ class ProxyBodyMethodTests(SimpleTestCase):
 
         self.assertEqual(upstream.call_args.kwargs["json"], {"username": "#anonymous"})
 
+    def test_query_string_is_not_forwarded(self, upstream):
+        upstream.return_value = upstream_reply({})
+
+        self.send("DELETE", "/my_test_route/things?id=3", {"hello": "world"})
+
+        sent = upstream.call_args.kwargs
+        self.assertEqual(sent["url"], UPSTREAM + "/get/things")
+        self.assertIsNone(sent["params"])
+
     def test_body_that_is_not_json_returns_error_status(self, upstream):
         resp = self.client.post("/my_test_route/", data="a=1",
                                 content_type="application/x-www-form-urlencoded")

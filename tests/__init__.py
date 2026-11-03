@@ -26,6 +26,17 @@ settings.configure(
         'django.contrib.auth.middleware.AuthenticationMiddleware',
         'django.contrib.messages.middleware.MessageMiddleware',
     ],
+    # Templates as in a new Django project; Django REST framework uses them for
+    # the error pages it shows to browsers.
+    TEMPLATES=[{
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "APP_DIRS": True,
+        "OPTIONS": {"context_processors": [
+            "django.template.context_processors.request",
+            "django.contrib.auth.context_processors.auth",
+            "django.contrib.messages.context_processors.messages",
+        ]},
+    }],
     # The project URLs are set up the way the README tells users to.
     ROOT_URLCONF="tests.urls",
     ###################################

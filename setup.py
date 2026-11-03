@@ -55,6 +55,6 @@ setuptools.setup(
     install_requires=['django>=4.0.0', 'requests', 'loguru', 'djangorestframework'],
     extras_require={
         'dev': ['check-manifest'],
-        'test': ['pytest'],
+        'test': ['pytest', 'djangorestframework-simplejwt'],
     },
 )
