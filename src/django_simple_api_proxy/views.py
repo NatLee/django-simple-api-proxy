@@ -42,6 +42,14 @@ ANONYMOUS_USERNAME = "#anonymous"
 #: What the client gets when a request cannot be proxied (both modes).
 ERROR_REPLY = {"status": "error"}
 
+_JSON_TYPE_NAMES = {list: "an array", str: "a string", int: "a number", float: "a number",
+                    bool: "true or false", type(None): "null"}
+
+
+class ProxyError(ValueError):
+    """A request the proxy cannot forward; the message says why, for the log."""
+
+
 def _field_names(body: Any) -> str:
     """Describe a decoded JSON body for the log without any of its values."""
     if isinstance(body, dict):
@@ -51,6 +59,8 @@ def _field_names(body: Any) -> str:
 
 def _failure_reason(exc: Exception) -> str:
     """One line for the log about why a request could not be proxied."""
+    if isinstance(exc, ProxyError):
+        return str(exc)
     if isinstance(exc, requests.Timeout):
         return "the API server did not answer in time"
     if isinstance(exc, requests.ConnectionError):
@@ -145,12 +155,15 @@ class APIProxy(APIView):
         logger.debug("Upstream URL: {}", url)
         return url
 
-    def update_payload(self, request: Request, params: dict[str, Any]) -> dict[str, Any]:
+    def update_payload(self, request: Request, params: Any) -> dict[str, Any]:
         """Set ``username`` in ``params`` and return ``params`` (JSON mode).
 
         The value is the name of the user Django REST framework authenticated, or
         ``#anonymous``. A ``username`` sent by the client is replaced.
         """
+        if not isinstance(params, dict):
+            kind = _JSON_TYPE_NAMES.get(type(params), type(params).__name__)
+            raise ProxyError(f"the JSON body must be an object ({{...}}), not {kind}")
         user = request.user
         username = getattr(user, "username", None)
         if username is None and hasattr(user, "get_username"):
@@ -165,7 +178,13 @@ class APIProxy(APIView):
 
         An empty body counts as ``{}``; ``username`` is added by ``update_payload``.
         """
-        params = json.loads(request.body) if request.body else {}
+        try:
+            params = json.loads(request.body) if request.body else {}
+        except ValueError as exc:
+            raise ProxyError(
+                f"the request body is not JSON (Content-Type: {request.content_type or 'none'}); "
+                "JSON mode only forwards JSON, set PROXY_PASS_THROUGH = True to forward any body"
+            ) from exc
         # Field names only: the values may be passwords or tokens.
         logger.debug("JSON body fields: {}", _field_names(params))
         path = self.get_proxy_path(request)
@@ -257,10 +276,10 @@ class APIProxy(APIView):
         if self.pass_through:
             return self._pass_through(request, method)
         try:
-            reply = self._send_upstream(request, method).json()
-        except Exception:  # Whatever went wrong, the client gets the same answer.
-            logger.exception('Could not proxy {} {}, replying {{"status": "error"}}',
-                             method, request.path)
+            reply = self._json_from(self._send_upstream(request, method))
+        except Exception as exc:  # Whatever went wrong, the client gets the same answer.
+            logger.exception('Could not proxy {} {}: {}. Replying {{"status": "error"}}',
+                             method, request.path, _failure_reason(exc))
             reply = ERROR_REPLY.copy()
         return self.response(reply)
 
@@ -273,6 +292,18 @@ class APIProxy(APIView):
             return self.send_request(method, url, params=params)
         url, body = self.preprocess_request_body(request)
         return self.send_request(method, url, json=body)
+
+    @staticmethod
+    def _json_from(upstream: Any) -> Any:
+        try:
+            return upstream.json()
+        except ValueError as exc:
+            status = getattr(upstream, "status_code", "?")
+            kind = _content_type(upstream) or "no Content-Type"
+            raise ProxyError(
+                f"the API server answered HTTP {status} ({kind}), which is not JSON; "
+                "set PROXY_PASS_THROUGH = True to pass any reply on"
+            ) from exc
 
     def _pass_through(self, request: Request, method: str) -> HttpResponse:
         # Django REST framework would replace the API server's Allow header and add

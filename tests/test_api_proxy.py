@@ -281,7 +281,45 @@ class LoggingTests(SimpleTestCase):
         self.assertEqual(record["level"].name, "ERROR")
         self.assertIs(record["exception"].type, requests.ConnectionError)
         self.assertEqual(record["message"],
-                         'Could not proxy GET /my_test_route/, replying {"status": "error"}')
+                         'Could not proxy GET /my_test_route/: could not connect to the API '
+                         'server. Replying {"status": "error"}')
+
+    def test_failure_log_says_why_in_one_line(self, upstream):
+        cases = [
+            ("form body", lambda: self.client.post(
+                "/my_test_route/", data="a=1", content_type="application/x-www-form-urlencoded"),
+             "the request body is not JSON (Content-Type: application/x-www-form-urlencoded); "
+             "JSON mode only forwards JSON, set PROXY_PASS_THROUGH = True to forward any body"),
+            ("JSON array", lambda: self.client.post(
+                "/my_test_route/", data="[1, 2]", content_type="application/json"),
+             "the JSON body must be an object ({...}), not an array"),
+            ("HTML reply", lambda: self.client.get("/my_test_route/missing"),
+             "the API server answered HTTP 404 (text/html), which is not JSON; "
+             "set PROXY_PASS_THROUGH = True to pass any reply on"),
+            ("timeout", lambda: self.client.get("/my_test_route/slow"),
+             "the API server did not answer in time"),
+        ]
+        html = mock.Mock(status_code=404, headers=requests.structures.CaseInsensitiveDict(
+            {"Content-Type": "text/html"}))
+        html.json.side_effect = requests.JSONDecodeError("Expecting value", "<html>", 0)
+
+        def api_server(**kwargs):
+            if kwargs["url"].endswith("/missing"):
+                return html
+            raise requests.ReadTimeout("read timed out")
+
+        upstream.side_effect = api_server
+        for name, send, reason in cases:
+            with self.subTest(name):
+                errors = self.capture("ERROR")
+
+                resp = send()
+
+                self.assertEqual(resp.json(), {"status": "error"})
+                self.assertEqual(errors[-1].record["message"],
+                                 f"Could not proxy {resp.wsgi_request.method} "
+                                 f"{resp.wsgi_request.path}: {reason}. "
+                                 'Replying {"status": "error"}')
 
     def test_debug_log_says_what_was_forwarded_where(self, upstream):
         upstream.return_value = upstream_reply({})
