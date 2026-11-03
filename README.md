@@ -168,6 +168,7 @@ What else a subclass can change:
 - **Reply**: the API server's JSON goes back as is, with HTTP 200. Its status code and headers are not passed on.
 - **Errors**: if the body is not a JSON object, the API server can't be reached or doesn't answer within 180 seconds, or its reply is not JSON, the client gets `{"status": "error"}` with HTTP 200, and the error is logged with its traceback.
 - **TLS**: the API server's certificate is checked.
+- **Logs**: each request is logged at `DEBUG` level. Of a JSON body, only the field names are logged, never the values. See [Logging](#logging).
 
 ### Known limitations
 
@@ -179,15 +180,16 @@ This is how the proxy behaves today; plan around it:
 
 ## Logging
 
-The proxy logs through loguru: every request at `DEBUG` level, failures at `ERROR` level with the traceback.
+The proxy logs through loguru: every request at `DEBUG` level, failures at `ERROR` level with the traceback. Request bodies are logged by field name only, never by value. A `POST` with `{"user": "nat", "password": "hunter2"}` logs this:
 
 ```log
-2026-11-03 20:25:31.415 | DEBUG    | django_simple_api_proxy.views:_forward:139 - Proxy GET /my_test_route/
-2026-11-03 20:25:31.415 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:77 - Upstream URL: https://httpbin.org/get
-2026-11-03 20:25:31.416 | DEBUG    | django_simple_api_proxy.views:update_payload:88 - Username: #anonymous
+2026-11-03 12:56:05.547 | DEBUG    | django_simple_api_proxy.views:_forward:147 - Proxy POST /my_test_route/
+2026-11-03 12:56:05.547 | DEBUG    | django_simple_api_proxy.views:preprocess_request_body:106 - JSON body fields: ['user', 'password']
+2026-11-03 12:56:05.548 | DEBUG    | django_simple_api_proxy.views:get_proxy_path:84 - Upstream URL: https://httpbin.org/anything
+2026-11-03 12:56:05.548 | DEBUG    | django_simple_api_proxy.views:update_payload:95 - Username: #anonymous
 ```
 
-Unless you configure it, loguru prints all of this to stderr, including the JSON bodies of `POST`, `PUT`, `PATCH` and `DELETE` requests, and the values of local variables in tracebacks. If those may hold passwords or tokens, turn the proxy's log off, or keep only `INFO` and up without the variable values:
+Unless you configure it, loguru prints all of this to stderr. Its default handler also prints the values of local variables in tracebacks (`diagnose=True`), so when a request fails, its body can still show up in the traceback. If bodies may hold passwords or tokens, turn the proxy's log off, or keep only `INFO` and up without the variable values:
 
 ```py
 import sys
